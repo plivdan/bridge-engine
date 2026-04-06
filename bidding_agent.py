@@ -1,0 +1,769 @@
+"""State-machine bidding agent implementing Standard American.
+
+The bidder recomputes its phase from the auction history on every call
+to ``bid()``, so it carries no mutable state between calls.
+
+Bidding system summary (Standard American Yellow Card):
+    - 1NT opening: 15-17 HCP, balanced, all suits stopped
+    - 2NT opening: 20-21 HCP, balanced
+    - 2C opening: 22+ HCP (artificial, strong, forcing)
+    - 1-of-suit: 12-21 HCP, 5+ in majors, 3+ in minors
+    - Responses calibrated to reach game with 26+ combined points
+    - Blackwood 4NT for slam investigation
+"""
+
+from enum import Enum, auto
+from dataclasses import dataclass, field
+from typing import Optional, List, Dict, Any
+
+from card import Card, Suit, Rank
+from auction import Bid, PASS, DOUBLE, REDOUBLE, make_bid
+from hand_eval import (
+    hcp, hand_shape, total_points, distribution_points, support_points,
+    suit_length, suit_quality, stopper, all_suits_stopped, rule_of_20,
+    biddable_suit, quick_tricks, HandShape,
+)
+
+
+class BidPhase(Enum):
+    """Which stage of the bidding conversation we are in."""
+    OPENING = auto()
+    OVERCALL = auto()
+    RESPONDING = auto()
+    OPENER_REBID = auto()
+    RESPONDER_REBID = auto()
+    COMPETITIVE = auto()
+    SLAM_INVESTIGATION = auto()
+    SIGNOFF = auto()
+
+
+@dataclass
+class PartnerEstimate:
+    """Running estimate of partner's hand based on their bids."""
+    min_hcp: int = 0
+    max_hcp: int = 40
+    known_suits: Dict[Suit, int] = field(default_factory=dict)
+    is_balanced: Optional[bool] = None
+
+
+class StateMachineBidder:
+    """Standard American bidding agent.
+
+    Args:
+        seat: Seat index (0=N, 1=E, 2=S, 3=W).
+    """
+
+    def __init__(self, seat: int):
+        self.seat = seat
+
+    # ------------------------------------------------------------------
+    # helpers to parse the auction history
+    # ------------------------------------------------------------------
+
+    def _my_bids(self, calls: list, dealer: int) -> List[Bid]:
+        return [calls[i] for i in range(len(calls))
+                if (dealer + i) % 4 == self.seat and not calls[i].special]
+
+    def _partner_bids(self, calls: list, dealer: int) -> List[Bid]:
+        partner = (self.seat + 2) % 4
+        return [calls[i] for i in range(len(calls))
+                if (dealer + i) % 4 == partner and not calls[i].special]
+
+    def _opp_bids(self, calls: list, dealer: int) -> List[Bid]:
+        return [calls[i] for i in range(len(calls))
+                if (dealer + i) % 4 % 2 != self.seat % 2 and not calls[i].special]
+
+    def _partner_calls(self, calls: list, dealer: int) -> List[Bid]:
+        partner = (self.seat + 2) % 4
+        return [calls[i] for i in range(len(calls))
+                if (dealer + i) % 4 == partner]
+
+    def _last_opp_bid(self, calls: list, dealer: int) -> Optional[Bid]:
+        for i in range(len(calls) - 1, -1, -1):
+            if (dealer + i) % 4 % 2 != self.seat % 2 and not calls[i].special:
+                return calls[i]
+        return None
+
+    # ------------------------------------------------------------------
+    # phase detection
+    # ------------------------------------------------------------------
+
+    def _determine_phase(self, obs: dict) -> BidPhase:
+        calls = obs.get('calls', [])
+        dealer = obs['dealer']
+        my = self._my_bids(calls, dealer)
+        partner = self._partner_bids(calls, dealer)
+        opp = self._opp_bids(calls, dealer)
+
+        if not my and not partner:
+            return BidPhase.OVERCALL if opp else BidPhase.OPENING
+
+        if partner and not my:
+            return BidPhase.RESPONDING
+
+        if my and partner:
+            # check for slam potential
+            fit = self._detected_fit(my, partner, obs['hand'])
+            tp = total_points(obs['hand'], fit)
+            est = self._estimate_partner(partner, calls, dealer)
+            combined = tp + (est.min_hcp + est.max_hcp) // 2
+            if combined >= 33:
+                return BidPhase.SLAM_INVESTIGATION
+            if len(my) == 1 and len(partner) >= 1:
+                return BidPhase.OPENER_REBID
+            return BidPhase.RESPONDER_REBID
+
+        if my and not partner:
+            if opp:
+                return BidPhase.COMPETITIVE
+            return BidPhase.SIGNOFF
+
+        return BidPhase.SIGNOFF
+
+    # ------------------------------------------------------------------
+    # fit and target
+    # ------------------------------------------------------------------
+
+    def _detected_fit(self, my_bids: list, partner_bids: list,
+                      hand: List[Card]) -> Optional[Suit]:
+        """Return agreed trump suit if an 8+ card fit is likely."""
+        for suit in (Suit.S, Suit.H, Suit.D, Suit.C):
+            my_len = suit_length(hand, suit)
+            partner_bid_suit = any(b.strain == suit for b in partner_bids)
+            i_bid_suit = any(b.strain == suit for b in my_bids)
+            # partner bid the suit (promises 4+) and I have 4+
+            if partner_bid_suit and my_len >= 4:
+                return suit
+            # I bid the suit (promise 5+ major, 3+ minor) and partner raised
+            if i_bid_suit and partner_bid_suit:
+                return suit
+            # partner bid and I have 3+ support
+            if partner_bid_suit and my_len >= 3 and suit in (Suit.H, Suit.S):
+                return suit
+        return None
+
+    def _target_level(self, combined: int, fit: Optional[Suit]) -> tuple:
+        """Map combined points to (level, strain) target."""
+        if combined >= 37:
+            strain = fit if fit is not None else Suit.NT
+            return (7, strain)
+        if combined >= 33:
+            strain = fit if fit is not None else Suit.NT
+            return (6, strain)
+        if combined >= 26:
+            if fit in (Suit.H, Suit.S):
+                return (4, fit)
+            if fit in (Suit.C, Suit.D):
+                # prefer 3NT if we have stoppers, otherwise 5m
+                return (3, Suit.NT)
+            return (3, Suit.NT)
+        if combined >= 23:
+            return (2, Suit.NT)
+        if fit is not None:
+            return (1, fit)
+        return (1, Suit.NT)
+
+    # ------------------------------------------------------------------
+    # partner estimation
+    # ------------------------------------------------------------------
+
+    def _estimate_partner(self, partner_bids: list, calls: list,
+                          dealer: int) -> PartnerEstimate:
+        est = PartnerEstimate()
+        if not partner_bids:
+            return est
+
+        first = partner_bids[0]
+        # Interpret partner's first bid
+        if first.level == 1 and first.strain == Suit.NT:
+            est.min_hcp, est.max_hcp = 15, 17
+            est.is_balanced = True
+        elif first.level == 2 and first.strain == Suit.NT:
+            est.min_hcp, est.max_hcp = 20, 21
+            est.is_balanced = True
+        elif first.level == 2 and first.strain == Suit.C:
+            est.min_hcp, est.max_hcp = 22, 40
+        elif first.level == 1:
+            est.min_hcp, est.max_hcp = 12, 21
+            if first.strain in (Suit.H, Suit.S):
+                est.known_suits[first.strain] = 5
+            else:
+                est.known_suits[first.strain] = 3
+        elif first.level >= 2:
+            # jump bid or response
+            est.min_hcp, est.max_hcp = 6, 18
+            if first.strain in (Suit.H, Suit.S):
+                est.known_suits[first.strain] = 5
+
+        # If partner raised our suit, they show support
+        my_bids_here = self._my_bids(calls, dealer)
+        if my_bids_here:
+            my_strain = my_bids_here[0].strain
+            for pb in partner_bids:
+                if pb.strain == my_strain:
+                    est.known_suits[my_strain] = max(
+                        est.known_suits.get(my_strain, 0), 3)
+        return est
+
+    # ------------------------------------------------------------------
+    # select a valid bid closest to target
+    # ------------------------------------------------------------------
+
+    def _best_valid(self, target_level: int, target_strain: Suit,
+                    valid: list) -> Optional[Bid]:
+        """Return the bid at (target_level, target_strain) if legal."""
+        target = make_bid(target_level, target_strain)
+        if target in valid:
+            return target
+        return None
+
+    def _bid_up_to(self, level: int, strain: Suit, valid: list) -> Bid:
+        """Bid at (level, strain) if valid, else the cheapest legal bid
+        in that strain, else PASS."""
+        target = make_bid(level, strain)
+        if target in valid:
+            return target
+        # try cheaper levels in the same strain
+        for lv in range(1, 8):
+            b = make_bid(lv, strain)
+            if b in valid:
+                return b
+        return PASS
+
+    def _cheapest_in_suit(self, suit: Suit, valid: list) -> Optional[Bid]:
+        """Cheapest available bid in the given suit."""
+        for lv in range(1, 8):
+            b = make_bid(lv, suit)
+            if b in valid:
+                return b
+        return None
+
+    # ------------------------------------------------------------------
+    # OPENING
+    # ------------------------------------------------------------------
+
+    def _bid_opening(self, obs: dict) -> Bid:
+        hand = obs['hand']
+        valid = obs['valid_calls']
+        h = hcp(hand)
+        shape = hand_shape(hand)
+
+        # Sub-opening
+        if h < 12 and not rule_of_20(hand):
+            return PASS
+
+        # Strong 2C
+        if h >= 22:
+            b = self._best_valid(2, Suit.C, valid)
+            if b:
+                return b
+            # fallback: bid highest available
+            return self._open_suit(hand, shape, valid)
+
+        # 2NT: 20-21 balanced
+        if 20 <= h <= 21 and shape.is_balanced:
+            b = self._best_valid(2, Suit.NT, valid)
+            if b:
+                return b
+
+        # 1NT: 15-17 balanced with all stoppers
+        if 15 <= h <= 17 and shape.is_balanced and all_suits_stopped(hand):
+            b = self._best_valid(1, Suit.NT, valid)
+            if b:
+                return b
+
+        # 1-of-suit
+        return self._open_suit(hand, shape, valid)
+
+    def _open_suit(self, hand: List[Card], shape: HandShape,
+                   valid: list) -> Bid:
+        """Choose 1-of-suit opening."""
+        # 5+ card major → bid it (prefer spades with 5-5)
+        for suit in (Suit.S, Suit.H):
+            if shape.length(suit) >= 5:
+                b = self._cheapest_in_suit(suit, valid)
+                if b:
+                    return b
+
+        # Longer minor
+        d_len = shape.diamonds
+        c_len = shape.clubs
+        if d_len >= c_len and d_len >= 3:
+            b = self._cheapest_in_suit(Suit.D, valid)
+            if b:
+                return b
+        if c_len >= 3:
+            b = self._cheapest_in_suit(Suit.C, valid)
+            if b:
+                return b
+
+        # fallback: 1C (always biddable as a "better minor")
+        b = self._cheapest_in_suit(Suit.C, valid)
+        return b if b else PASS
+
+    # ------------------------------------------------------------------
+    # RESPONDING
+    # ------------------------------------------------------------------
+
+    def _bid_responding(self, obs: dict) -> Bid:
+        hand = obs['hand']
+        valid = obs['valid_calls']
+        calls = obs.get('calls', [])
+        dealer = obs['dealer']
+        h = hcp(hand)
+        shape = hand_shape(hand)
+        partner_bids = self._partner_bids(calls, dealer)
+
+        if not partner_bids:
+            return PASS
+
+        opening = partner_bids[0]
+
+        # Response to 1NT (15-17)
+        if opening.level == 1 and opening.strain == Suit.NT:
+            return self._respond_to_1nt(hand, h, valid)
+
+        # Response to 2NT (20-21)
+        if opening.level == 2 and opening.strain == Suit.NT:
+            return self._respond_to_2nt(hand, h, valid)
+
+        # Response to 2C (22+ strong)
+        if opening.level == 2 and opening.strain == Suit.C:
+            return self._respond_to_2c(hand, h, shape, valid)
+
+        # Response to 1-of-suit
+        if opening.level == 1:
+            return self._respond_to_1_suit(hand, h, shape, opening, valid)
+
+        return PASS
+
+    def _respond_to_1nt(self, hand: List[Card], h: int,
+                        valid: list) -> Bid:
+        # 0-7: pass
+        if h <= 7:
+            return PASS
+        # 8-9: 2NT (invitational)
+        if h <= 9:
+            b = self._best_valid(2, Suit.NT, valid)
+            return b if b else PASS
+        # 10-15: 3NT
+        if h <= 15:
+            b = self._best_valid(3, Suit.NT, valid)
+            return b if b else PASS
+        # 16+: 4NT (quantitative slam invite)
+        b = self._best_valid(4, Suit.NT, valid)
+        return b if b else self._best_valid(3, Suit.NT, valid) or PASS
+
+    def _respond_to_2nt(self, hand: List[Card], h: int,
+                        valid: list) -> Bid:
+        # 0-3: pass
+        if h <= 3:
+            return PASS
+        # 4-10: 3NT
+        if h <= 10:
+            b = self._best_valid(3, Suit.NT, valid)
+            return b if b else PASS
+        # 11+: 4NT slam invite
+        b = self._best_valid(4, Suit.NT, valid)
+        return b if b else self._best_valid(3, Suit.NT, valid) or PASS
+
+    def _respond_to_2c(self, hand: List[Card], h: int, shape: HandShape,
+                       valid: list) -> Bid:
+        # 2D waiting response (artificial, 0-7 HCP)
+        if h <= 7:
+            b = self._best_valid(2, Suit.D, valid)
+            return b if b else PASS
+        # 8+ with a 5+ suit: bid it
+        for suit in (Suit.S, Suit.H, Suit.D, Suit.C):
+            if shape.length(suit) >= 5 and suit_quality(hand, suit) >= 2:
+                b = self._cheapest_in_suit(suit, valid)
+                if b:
+                    return b
+        # 2NT: 8+ balanced
+        b = self._best_valid(2, Suit.NT, valid)
+        return b if b else PASS
+
+    def _respond_to_1_suit(self, hand: List[Card], h: int,
+                           shape: HandShape, opening: Bid,
+                           valid: list) -> Bid:
+        strain = opening.strain
+
+        # Too weak to respond
+        if h < 6:
+            return PASS
+
+        # Major fit: raise
+        if strain in (Suit.H, Suit.S):
+            support = suit_length(hand, strain)
+            if support >= 4 and h >= 13:
+                # jump to game
+                b = self._best_valid(4, strain, valid)
+                if b:
+                    return b
+            if support >= 4 and h >= 10:
+                # limit raise (jump raise)
+                b = self._best_valid(3, strain, valid)
+                if b:
+                    return b
+            if support >= 3 and h >= 6:
+                # simple raise
+                b = self._best_valid(2, strain, valid)
+                if b:
+                    return b
+
+        # New suit at 1 level (6+ HCP)
+        for suit in (Suit.S, Suit.H):
+            if suit > strain and shape.length(suit) >= 4:
+                b = self._cheapest_in_suit(suit, valid)
+                if b and b.level == 1:
+                    return b
+
+        # 1NT response (6-10, no fit, no new suit at 1)
+        if 6 <= h <= 10:
+            b = self._best_valid(1, Suit.NT, valid)
+            if b:
+                return b
+
+        # New suit at 2 level (10+ HCP)
+        if h >= 10:
+            for suit in (Suit.S, Suit.H, Suit.D, Suit.C):
+                if suit != strain and shape.length(suit) >= 4:
+                    b = self._cheapest_in_suit(suit, valid)
+                    if b:
+                        return b
+
+        # 2NT (10-12, balanced, no fit)
+        if 10 <= h <= 12 and shape.is_balanced:
+            b = self._best_valid(2, Suit.NT, valid)
+            if b:
+                return b
+
+        # 3NT (13-15, balanced, stoppers)
+        if 13 <= h <= 15 and all_suits_stopped(hand):
+            b = self._best_valid(3, Suit.NT, valid)
+            if b:
+                return b
+
+        # Fallback: raise or pass
+        return PASS
+
+    # ------------------------------------------------------------------
+    # OPENER REBID
+    # ------------------------------------------------------------------
+
+    def _bid_opener_rebid(self, obs: dict) -> Bid:
+        hand = obs['hand']
+        valid = obs['valid_calls']
+        calls = obs.get('calls', [])
+        dealer = obs['dealer']
+        h = hcp(hand)
+        shape = hand_shape(hand)
+        partner_bids = self._partner_bids(calls, dealer)
+        my_bids = self._my_bids(calls, dealer)
+
+        if not my_bids or not partner_bids:
+            return PASS
+
+        my_opening = my_bids[0]
+        partner_resp = partner_bids[0]
+        fit = self._detected_fit(my_bids, partner_bids, hand)
+        est = self._estimate_partner(partner_bids, calls, dealer)
+        combined_min = h + est.min_hcp
+        combined_max = h + est.max_hcp
+
+        # If we have a fit, raise to the appropriate level
+        if fit:
+            tp = total_points(hand, fit)
+            combined = tp + (est.min_hcp + est.max_hcp) // 2
+            target_lv, target_st = self._target_level(combined, fit)
+            b = self._best_valid(target_lv, target_st, valid)
+            if b:
+                return b
+
+        # Minimum opener (12-14): rebid cheaply
+        if h <= 14:
+            # rebid 6+ card suit
+            if shape.length(my_opening.strain) >= 6:
+                b = self._cheapest_in_suit(my_opening.strain, valid)
+                if b:
+                    return b
+            # 1NT rebid (balanced)
+            if shape.is_balanced:
+                b = self._best_valid(1, Suit.NT, valid)
+                if b:
+                    return b
+            # new suit at cheapest level
+            for suit in (Suit.S, Suit.H, Suit.D, Suit.C):
+                if suit != my_opening.strain and shape.length(suit) >= 4:
+                    b = self._cheapest_in_suit(suit, valid)
+                    if b and b.level <= 2:
+                        return b
+            return PASS
+
+        # Medium opener (15-17)
+        if h <= 17:
+            # jump rebid own suit with 6+
+            if shape.length(my_opening.strain) >= 6:
+                for lv in range(2, 4):
+                    b = make_bid(lv, my_opening.strain)
+                    if b in valid:
+                        return b
+            # 2NT
+            if shape.is_balanced:
+                b = self._best_valid(2, Suit.NT, valid)
+                if b:
+                    return b
+
+        # Strong (18+): jump to game or bid new suit forcing
+        if h >= 18:
+            if fit:
+                target_lv, target_st = self._target_level(
+                    total_points(hand, fit) + est.min_hcp, fit)
+                b = self._best_valid(target_lv, target_st, valid)
+                if b:
+                    return b
+            # 3NT
+            if shape.is_balanced and all_suits_stopped(hand):
+                b = self._best_valid(3, Suit.NT, valid)
+                if b:
+                    return b
+
+        # Default: pass
+        return PASS
+
+    # ------------------------------------------------------------------
+    # RESPONDER REBID
+    # ------------------------------------------------------------------
+
+    def _bid_responder_rebid(self, obs: dict) -> Bid:
+        hand = obs['hand']
+        valid = obs['valid_calls']
+        calls = obs.get('calls', [])
+        dealer = obs['dealer']
+        h = hcp(hand)
+        shape = hand_shape(hand)
+        my_bids = self._my_bids(calls, dealer)
+        partner_bids = self._partner_bids(calls, dealer)
+        fit = self._detected_fit(my_bids, partner_bids, hand)
+        est = self._estimate_partner(partner_bids, calls, dealer)
+        combined = total_points(hand, fit) + (est.min_hcp + est.max_hcp) // 2
+
+        target_lv, target_st = self._target_level(combined, fit)
+
+        # Try to bid the target
+        b = self._best_valid(target_lv, target_st, valid)
+        if b:
+            return b
+
+        # If target not available, try game in a major
+        if fit in (Suit.H, Suit.S) and combined >= 26:
+            b = self._best_valid(4, fit, valid)
+            if b:
+                return b
+
+        # 3NT with values
+        if combined >= 26 and all_suits_stopped(hand):
+            b = self._best_valid(3, Suit.NT, valid)
+            if b:
+                return b
+
+        return PASS
+
+    # ------------------------------------------------------------------
+    # OVERCALL
+    # ------------------------------------------------------------------
+
+    def _bid_overcall(self, obs: dict) -> Bid:
+        hand = obs['hand']
+        valid = obs['valid_calls']
+        h = hcp(hand)
+        shape = hand_shape(hand)
+
+        # 1NT overcall: 15-17 balanced with stopper in their suit
+        calls = obs.get('calls', [])
+        opp_suit = None
+        for c in calls:
+            if not c.special:
+                opp_suit = c.strain
+                break
+
+        if 15 <= h <= 17 and shape.is_balanced and opp_suit and stopper(hand, opp_suit):
+            b = self._best_valid(1, Suit.NT, valid)
+            if b:
+                return b
+
+        # Suit overcall: 8-16 HCP with 5+ card suit
+        if 8 <= h <= 16:
+            for suit in (Suit.S, Suit.H, Suit.D, Suit.C):
+                if shape.length(suit) >= 5 and suit_quality(hand, suit) >= 2:
+                    b = self._cheapest_in_suit(suit, valid)
+                    if b:
+                        return b
+
+        # Strong hand: double or bid
+        if h >= 17:
+            if DOUBLE in valid:
+                return DOUBLE
+            # bid own suit
+            for suit in (Suit.S, Suit.H, Suit.D, Suit.C):
+                if shape.length(suit) >= 5:
+                    b = self._cheapest_in_suit(suit, valid)
+                    if b:
+                        return b
+
+        return PASS
+
+    # ------------------------------------------------------------------
+    # COMPETITIVE
+    # ------------------------------------------------------------------
+
+    def _bid_competitive(self, obs: dict) -> Bid:
+        hand = obs['hand']
+        valid = obs['valid_calls']
+        h = hcp(hand)
+        calls = obs.get('calls', [])
+        dealer = obs['dealer']
+        my_bids = self._my_bids(calls, dealer)
+        partner_bids = self._partner_bids(calls, dealer)
+        fit = self._detected_fit(my_bids, partner_bids, hand)
+
+        if fit:
+            tp = total_points(hand, fit)
+            est = self._estimate_partner(partner_bids, calls, dealer)
+            combined = tp + (est.min_hcp + est.max_hcp) // 2
+            target_lv, target_st = self._target_level(combined, fit)
+            b = self._best_valid(target_lv, target_st, valid)
+            if b:
+                return b
+
+        # Penalty double: if opponents bid high and we have strength
+        if h >= 14 and DOUBLE in valid:
+            return DOUBLE
+
+        return PASS
+
+    # ------------------------------------------------------------------
+    # SLAM INVESTIGATION
+    # ------------------------------------------------------------------
+
+    def _bid_slam(self, obs: dict) -> Bid:
+        hand = obs['hand']
+        valid = obs['valid_calls']
+        calls = obs.get('calls', [])
+        dealer = obs['dealer']
+        my_bids = self._my_bids(calls, dealer)
+        partner_bids = self._partner_bids(calls, dealer)
+        fit = self._detected_fit(my_bids, partner_bids, hand)
+        est = self._estimate_partner(partner_bids, calls, dealer)
+        tp = total_points(hand, fit)
+        combined = tp + (est.min_hcp + est.max_hcp) // 2
+
+        # Check if we already bid 4NT (Blackwood) — partner should respond
+        my_calls_all = [calls[i] for i in range(len(calls))
+                        if (dealer + i) % 4 == self.seat]
+        partner_calls_all = self._partner_calls(calls, dealer)
+        i_asked_blackwood = any(
+            c.level == 4 and c.strain == Suit.NT and not c.special
+            for c in my_calls_all)
+        partner_asked_blackwood = any(
+            c.level == 4 and c.strain == Suit.NT and not c.special
+            for c in partner_calls_all)
+
+        # If partner responded to our Blackwood
+        if i_asked_blackwood and partner_bids:
+            last_partner = partner_calls_all[-1] if partner_calls_all else None
+            if last_partner and last_partner.level == 5 and not last_partner.special:
+                # Count aces from response
+                aces = {Suit.C: 0, Suit.D: 1, Suit.H: 2, Suit.S: 3}.get(
+                    last_partner.strain, 0)
+                my_aces = sum(1 for c in hand if c.rank == Rank.ACE)
+                total_aces = aces + my_aces  # this double-counts but is approximate
+
+                strain = fit if fit else Suit.NT
+                if aces >= 2 or total_aces >= 3:
+                    # all aces accounted for → bid 6
+                    b = self._best_valid(6, strain, valid)
+                    if b:
+                        return b
+                if combined >= 37 and (aces >= 3 or total_aces >= 4):
+                    b = self._best_valid(7, strain, valid)
+                    if b:
+                        return b
+                # missing aces → sign off at 5
+                b = self._best_valid(5, strain, valid)
+                if b:
+                    return b
+
+        # If partner asked Blackwood, respond with ace count
+        if partner_asked_blackwood:
+            my_aces = sum(1 for c in hand if c.rank == Rank.ACE)
+            responses = {0: Suit.C, 1: Suit.D, 2: Suit.H, 3: Suit.S, 4: Suit.C}
+            resp_strain = responses[my_aces]
+            b = self._best_valid(5, resp_strain, valid)
+            if b:
+                return b
+
+        # Initiate Blackwood if we think slam is possible
+        if combined >= 33 and fit:
+            b = self._best_valid(4, Suit.NT, valid)
+            if b:
+                return b
+
+        # Direct slam bid with overwhelming points
+        if combined >= 37:
+            strain = fit if fit else Suit.NT
+            b = self._best_valid(7, strain, valid)
+            if b:
+                return b
+
+        if combined >= 33:
+            strain = fit if fit else Suit.NT
+            b = self._best_valid(6, strain, valid)
+            if b:
+                return b
+
+        # Fallback: bid game
+        target_lv, target_st = self._target_level(combined, fit)
+        b = self._best_valid(target_lv, target_st, valid)
+        return b if b else PASS
+
+    # ------------------------------------------------------------------
+    # main entry point
+    # ------------------------------------------------------------------
+
+    def bid(self, obs: dict) -> Bid:
+        """Select a bid given the current observation.
+
+        Args:
+            obs: Observation dict from GameState.observation().
+
+        Returns:
+            A legal Bid from obs['valid_calls'].
+        """
+        valid = obs['valid_calls']
+        if len(valid) == 1:
+            return valid[0]
+
+        phase = self._determine_phase(obs)
+
+        if phase == BidPhase.OPENING:
+            result = self._bid_opening(obs)
+        elif phase == BidPhase.RESPONDING:
+            result = self._bid_responding(obs)
+        elif phase == BidPhase.OPENER_REBID:
+            result = self._bid_opener_rebid(obs)
+        elif phase == BidPhase.RESPONDER_REBID:
+            result = self._bid_responder_rebid(obs)
+        elif phase == BidPhase.OVERCALL:
+            result = self._bid_overcall(obs)
+        elif phase == BidPhase.COMPETITIVE:
+            result = self._bid_competitive(obs)
+        elif phase == BidPhase.SLAM_INVESTIGATION:
+            result = self._bid_slam(obs)
+        else:
+            result = PASS
+
+        # Safety: ensure result is valid
+        if result in valid:
+            return result
+        return PASS if PASS in valid else valid[0]
