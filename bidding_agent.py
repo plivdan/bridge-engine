@@ -102,12 +102,14 @@ class StateMachineBidder:
             return BidPhase.RESPONDING
 
         if my and partner:
-            # check for slam potential
+            # check for slam potential — use conservative estimate
             fit = self._detected_fit(my, partner, obs['hand'])
             tp = total_points(obs['hand'], fit)
             est = self._estimate_partner(partner, calls, dealer)
-            combined = tp + (est.min_hcp + est.max_hcp) // 2
-            if combined >= 33:
+            # For slam, use min + 1/3 of range (conservative)
+            partner_est = est.min_hcp + (est.max_hcp - est.min_hcp) // 3
+            combined = tp + partner_est
+            if combined >= 33 and fit is not None:
                 return BidPhase.SLAM_INVESTIGATION
             if len(my) == 1 and len(partner) >= 1:
                 return BidPhase.OPENER_REBID
@@ -474,8 +476,11 @@ class StateMachineBidder:
         # If we have a fit, raise to the appropriate level
         if fit:
             tp = total_points(hand, fit)
-            combined = tp + (est.min_hcp + est.max_hcp) // 2
-            target_lv, target_st = self._target_level(combined, fit)
+            # Use conservative partner estimate for rebids
+            partner_est = est.min_hcp + (est.max_hcp - est.min_hcp) // 3
+            combined = tp + partner_est
+            # Cap at game level — slam decisions go through slam phase
+            target_lv, target_st = self._target_level(min(combined, 32), fit)
             b = self._best_valid(target_lv, target_st, valid)
             if b:
                 return b
@@ -546,9 +551,11 @@ class StateMachineBidder:
         partner_bids = self._partner_bids(calls, dealer)
         fit = self._detected_fit(my_bids, partner_bids, hand)
         est = self._estimate_partner(partner_bids, calls, dealer)
-        combined = total_points(hand, fit) + (est.min_hcp + est.max_hcp) // 2
+        partner_est = est.min_hcp + (est.max_hcp - est.min_hcp) // 3
+        combined = total_points(hand, fit) + partner_est
 
-        target_lv, target_st = self._target_level(combined, fit)
+        # Cap at game — slam goes through slam phase
+        target_lv, target_st = self._target_level(min(combined, 32), fit)
 
         # Try to bid the target
         b = self._best_valid(target_lv, target_st, valid)
@@ -630,15 +637,22 @@ class StateMachineBidder:
         if fit:
             tp = total_points(hand, fit)
             est = self._estimate_partner(partner_bids, calls, dealer)
-            combined = tp + (est.min_hcp + est.max_hcp) // 2
-            target_lv, target_st = self._target_level(combined, fit)
+            partner_est = est.min_hcp + (est.max_hcp - est.min_hcp) // 3
+            combined = tp + partner_est
+            target_lv, target_st = self._target_level(min(combined, 32), fit)
             b = self._best_valid(target_lv, target_st, valid)
             if b:
                 return b
 
-        # Penalty double: if opponents bid high and we have strength
-        if h >= 14 and DOUBLE in valid:
-            return DOUBLE
+        # Penalty double: only with strong trump holding in their suit
+        if h >= 15 and DOUBLE in valid:
+            opp_bids = self._opp_bids(calls, dealer)
+            if opp_bids:
+                opp_suit = opp_bids[-1].strain
+                opp_trump_holding = suit_length(hand, opp_suit)
+                # Only double if we have 4+ of their trump suit (trump stack)
+                if opp_trump_holding >= 4 and suit_quality(hand, opp_suit) >= 2:
+                    return DOUBLE
 
         return PASS
 
@@ -656,7 +670,9 @@ class StateMachineBidder:
         fit = self._detected_fit(my_bids, partner_bids, hand)
         est = self._estimate_partner(partner_bids, calls, dealer)
         tp = total_points(hand, fit)
-        combined = tp + (est.min_hcp + est.max_hcp) // 2
+        # Conservative: use min + 1/3 of range
+        partner_est = est.min_hcp + (est.max_hcp - est.min_hcp) // 3
+        combined = tp + partner_est
 
         # Check if we already bid 4NT (Blackwood) — partner should respond
         my_calls_all = [calls[i] for i in range(len(calls))
@@ -703,27 +719,22 @@ class StateMachineBidder:
             if b:
                 return b
 
-        # Initiate Blackwood if we think slam is possible
-        if combined >= 33 and fit:
+        # Only investigate slam with a fit and enough quick tricks
+        my_qt = quick_tricks(hand)
+        if combined >= 33 and fit and my_qt >= 2.0:
+            # Initiate Blackwood
             b = self._best_valid(4, Suit.NT, valid)
             if b:
                 return b
 
-        # Direct slam bid with overwhelming points
-        if combined >= 37:
-            strain = fit if fit else Suit.NT
-            b = self._best_valid(7, strain, valid)
+        # Direct slam only with extreme strength + fit
+        if combined >= 37 and fit and my_qt >= 3.0:
+            b = self._best_valid(6, fit, valid)
             if b:
                 return b
 
-        if combined >= 33:
-            strain = fit if fit else Suit.NT
-            b = self._best_valid(6, strain, valid)
-            if b:
-                return b
-
-        # Fallback: bid game
-        target_lv, target_st = self._target_level(combined, fit)
+        # Fallback: bid game (not slam)
+        target_lv, target_st = self._target_level(min(combined, 32), fit)
         b = self._best_valid(target_lv, target_st, valid)
         return b if b else PASS
 
