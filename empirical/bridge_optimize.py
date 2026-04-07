@@ -4,6 +4,7 @@ Evaluates BridgeParams configurations by playing head-to-head
 games and selecting the parameters that maximize score.
 """
 
+import os
 import random
 import contextlib
 import io
@@ -11,10 +12,10 @@ import time
 from dataclasses import replace
 from typing import Dict, List, Tuple
 
-from bridge_params import BridgeParams
-from smart_player import SmartPlayer
-from player import RuleBasedPlayer
-from game import Game
+from ai.bridge_params import BridgeParams
+from ai.smart_player import SmartPlayer
+from engine.player import RuleBasedPlayer
+from engine.game import Game
 
 
 def evaluate_params(params: BridgeParams, num_boards: int = 2000,
@@ -158,8 +159,8 @@ if __name__ == '__main__':
     print(f'\nPhase 2 complete: score {score2:+.1f} per board')
 
     # Save optimized params
-    best2.to_json('params_optimized.json')
-    print(f'\nOptimized params saved to params_optimized.json')
+    best2.to_json(os.path.join(os.path.dirname(__file__), '..', 'config', 'params_optimized.json'))
+    print(f'\nOptimized params saved to config/params_optimized.json')
     print(f'Total time: {time.time() - t0:.0f}s')
 
     # Show key changes

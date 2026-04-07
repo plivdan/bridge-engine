@@ -1,13 +1,13 @@
 import sys, os, random
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from card import Card, Suit, Rank, DECK, deal
-from auction import AuctionState, Bid, PASS, DOUBLE, REDOUBLE, make_bid
-from play import PlayState, Trick
-from scoring import score, _doubled_penalty, _trick_score
-from state import GameState
-from player import RandomPlayer, PassingPlayer, SimpleHeuristicPlayer, RuleBasedPlayer
-from game import Game, SelfPlayEnv, VUL_SCHEDULE
+from engine.card import Card, Suit, Rank, DECK, deal
+from engine.auction import AuctionState, Bid, PASS, DOUBLE, REDOUBLE, make_bid
+from engine.play import PlayState, Trick
+from engine.scoring import score, _doubled_penalty, _trick_score
+from engine.state import GameState
+from engine.player import RandomPlayer, PassingPlayer, SimpleHeuristicPlayer, RuleBasedPlayer
+from engine.game import Game, SelfPlayEnv, VUL_SCHEDULE
 
 PASS_COUNT = 0
 FAIL_COUNT = 0

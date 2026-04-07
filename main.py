@@ -8,8 +8,8 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(__file__))
 
-from player import RandomPlayer, PassingPlayer, SimpleHeuristicPlayer, RuleBasedPlayer
-from game import Game, SelfPlayEnv
+from engine.player import RandomPlayer, PassingPlayer, SimpleHeuristicPlayer, RuleBasedPlayer
+from engine.game import Game, SelfPlayEnv
 
 def demo_random(n=1):
     print("\n" + "="*60)

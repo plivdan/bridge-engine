@@ -9,7 +9,7 @@ only ever needs to monitor ``current_player`` to know when it is its turn.
 
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict
-from card import Card, Suit, Rank
+from .card import Card, Suit, Rank
 
 @dataclass
 class Trick:

@@ -11,11 +11,11 @@ This module implements the Laws of Duplicate Contract Bridge scoring
 
 Typical usage::
 
-    from card import Suit, Contract
+    from .card import Suit, Contract
     pts = score(contract, declarer=0, doubled=0, tricks_made=10, vulnerable=False)
 """
 
-from card import Suit
+from .card import Suit
 
 def score(contract, declarer, doubled, tricks_made, vulnerable):
     """Score a completed duplicate bridge contract.

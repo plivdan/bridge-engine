@@ -1,28 +1,39 @@
 # Architecture Deep Dive
 
+## Package Layout
+
+```
+engine/       Core bridge rules — no AI logic, no external dependencies
+ai/           AI agents — depends on engine/
+empirical/    Data collection and optimization — depends on engine/ and ai/
+tests/        Test suites — depends on all packages
+```
+
+Import direction: `engine/ <- ai/ <- empirical/`. The engine has zero knowledge of AI agents or optimization. AI agents import engine primitives. Empirical tools import both.
+
 ## Data Flow
 
 A complete board flows through five stages:
 
 ```
-deal() ──► GameState.new_deal()
-               │
-               ▼
+deal() --> GameState.new_deal()
+               |
+               v
            AuctionState
-           ├── apply_call() × N    (players bid in turn)
-           ├── valid_calls()       (legal bid enumeration)
-           └── result()            (contract, declarer, doubled)
-               │
-               ▼
+           |-- apply_call() x N    (players bid in turn)
+           |-- valid_calls()       (legal bid enumeration)
+           +-- result()            (contract, declarer, doubled)
+               |
+               v
            PlayState
-           ├── play_card() × 52   (4 cards × 13 tricks)
-           ├── valid_cards()       (follow-suit enforcement)
-           └── result()            (tricks_ns, tricks_ew, declarer_tricks)
-               │
-               ▼
+           |-- play_card() x 52   (4 cards x 13 tricks)
+           |-- valid_cards()       (follow-suit enforcement)
+           +-- result()            (tricks_ns, tricks_ew, declarer_tricks)
+               |
+               v
            score(contract, declarer, doubled, tricks, vulnerable)
-               │
-               ▼
+               |
+               v
            GameState.score_ns / score_ew
 ```
 
@@ -42,7 +53,7 @@ deal() ──► GameState.new_deal()
 - DOUBLE: only if the last bid was by the opposing side and not already doubled
 - REDOUBLE: only if the last action was a double by the opposing side
 
-**Declarer assignment** (`apply_call`): when a normal bid is made, the engine scans all prior calls to find the **first player on the same partnership** who bid the same strain. That player becomes declarer. This implements the bridge rule that declarer is the first player on the winning side to have named the denomination of the final contract.
+**Declarer assignment** (`apply_call`): when a normal bid is made, the engine scans all prior calls to find the **first player on the same partnership** who bid the same strain. That player becomes declarer.
 
 The auction ends when three consecutive passes follow a bid, or when four passes occur from the start (passed out).
 
@@ -57,13 +68,13 @@ A `Trick` collects cards from four seats in clockwise order from the leader. Fol
 
 ## The `current_seat` / `current_player` Split
 
-This is the most important design decision in the engine, and the one most likely to cause confusion.
+This is the most important design decision in the engine.
 
 ### Why two concepts?
 
 In bridge, the declarer physically plays cards from both their own hand and dummy's hand. The defenders play only their own cards. This creates an asymmetry:
 
-- **`current_seat`**: the physical position around the table whose turn it is. Always advances clockwise: leader → leader+1 → leader+2 → leader+3.
+- **`current_seat`**: the physical position around the table whose turn it is. Always advances clockwise.
 - **`current_player`**: the human/agent who controls that seat. Equals `current_seat` for all positions **except** dummy, where it equals `declarer`.
 
 ### Worked Example
@@ -82,30 +93,90 @@ Trick 1:
 
 When `current_seat = 2` (South/dummy):
 - `current_player` returns `0` (North/declarer)
-- `play_card(actor=0, card)` is called — the actor is the declarer
+- `play_card(actor=0, card)` is called
 - The card is validated against and removed from seat 2's (dummy's) hand
-- `valid_cards(2)` returns dummy's legal plays
-
-This means:
-1. The RL agent controlling North makes **two decisions** per trick (own hand + dummy)
-2. `observation()` always shows `valid_cards` for `current_seat`, not the requesting player
-3. External code should always use `next_actor()` to determine who acts, never assume from the seat
 
 ### Code path through `play_card`
 
 ```python
 def play_card(self, actor, card):
     seat = self.current_seat                          # physical seat
-    expected = self.declarer if seat == self.dummy else seat  # who should act
+    expected = self.declarer if seat == self.dummy else seat
     assert actor == expected                           # validate
-    assert card in self.valid_cards(seat)              # follow-suit check on SEAT
+    assert card in self.valid_cards(seat)              # follow-suit on SEAT
     self.hands[seat].remove(card)                      # remove from SEAT's hand
-    self.current_trick.add_card(seat, card)            # seat plays the card
+    self.current_trick.add_card(seat, card)
 ```
+
+## AI Agent Architecture
+
+### Bidding Agent (`ai/bidding_agent.py`)
+
+State-machine bidder implementing Standard American Yellow Card. Recomputes its phase from the auction history on every `bid()` call (stateless design).
+
+```
+BidPhase enum:
+  OPENING -> RESPONDING -> OPENER_REBID -> RESPONDER_REBID -> SIGNOFF
+                                        -> SLAM_INVESTIGATION
+  OVERCALL -> COMPETITIVE
+```
+
+Key methods:
+- `_determine_phase()`: scans auction history to classify the current situation
+- `_estimate_partner()`: infers partner's HCP range from their bids
+- `_target_level()`: computes how high to bid based on combined strength
+- All thresholds come from `BridgeParams` (no hardcoded magic numbers)
+
+### Card Play Agent (`ai/cardplay_agent.py`)
+
+Card-counting play agent with separate logic for opening lead, declarer play, and defense.
+
+```
+CardTracker: played cards, voids, high card mastery
+DeclarerPlan: winners, shortfall, finesse suits, ruff potential
+
+Opening lead: partner suit > sequence > 4th best (NT) / singleton (suit)
+Declarer:     ruff setup > finesse > cash winners > draw trumps
+Defense:      3rd hand high, 2nd hand low, cover honor, ruff when void
+```
+
+Optional Monte Carlo mode samples random opponent hands and evaluates cards via greedy playout.
+
+### Parameter System (`ai/bridge_params.py`)
+
+49 tunable parameters in a frozen-compatible dataclass:
+- Opening thresholds (min HCP, NT ranges, strong 2C)
+- Response thresholds (min HCP, raise levels)
+- Combined targets (game, slam, invitational)
+- Partner estimation fraction
+- Rebid brackets, overcall ranges
+- Hand evaluation weights (distribution, support points)
+- Card play tactics (cover honor rank, sequence rank, trump draw rank)
+- Monte Carlo settings
+
+`BridgeParams()` with defaults reproduces exact pre-parameterization behavior. `to_json()`/`from_json()` for persistence.
+
+## Empirical Optimization
+
+### Data Collection (`empirical/bridge_stats.py`)
+
+`collect_boards()` runs N boards silently, recording 30+ features per board in `BoardRecord` dataclass: per-seat HCP/TP/LTC/QT, partnership fit lengths, contract outcome, tricks, score.
+
+### EV Tables (`empirical/bridge_tables.py`)
+
+Built from mass simulation data:
+- **Game EV**: average score by (combined_hcp_bin, vulnerability) for game vs part-score
+- **Slam EV**: slam vs game EV by (combined_hcp_bin, has_fit, vulnerability)
+- **Make rates**: P(make | hcp_bin, level, vulnerability)
+- **Partner distributions**: empirical P(partner_hcp | bid_category)
+
+### Optimizer (`empirical/bridge_optimize.py`)
+
+Coordinate descent: sweeps each parameter over a candidate range, keeping the value that maximizes per-board score advantage. Two phases: high-impact params (8 params), then medium-impact (10 params). ~10 minutes for a full run.
 
 ## The Observation Dict
 
-`GameState.observation(player)` is the primary interface for ML agents. It returns a dict with:
+`GameState.observation(player)` is the primary interface for ML agents.
 
 ### Always present
 | Key | Type | Description |
@@ -120,7 +191,7 @@ def play_card(self, actor, card):
 ### During auction (adds)
 | Key | Type | Description |
 |-----|------|-------------|
-| `calls` | list[Bid] | All bids so far, in order |
+| `calls` | list[Bid] | All bids so far |
 | `current_bidder` | int | Seat index of next bidder |
 | `valid_calls` | list[Bid] | Legal bids for current bidder |
 | `contract` | Bid or None | Current highest bid |
@@ -139,57 +210,16 @@ def play_card(self, actor, card):
 | `current_seat` | int | Physical seat that plays next |
 | `valid_cards` | list[Card] | Legal cards for `current_seat` |
 
-**Design note**: `valid_cards` reflects `current_seat`'s legal plays, not the requesting `player`'s. When dummy is seated, `valid_cards` shows dummy's options even if the observation is requested by a different player. This is intentional — the RL agent that is `current_player` needs to know what it can play.
+## Extension Points
 
-## The SelfPlayEnv Loop
+### Neural network player
+1. Subclass `Player` from `engine.player`
+2. In `bid()`: encode observation -> tensor -> policy over `valid_calls`
+3. In `play_card()`: encode observation -> tensor -> policy over `valid_cards`
+4. Mask invalid actions using the valid lists
 
-```python
-class SelfPlayEnv:
-    def reset(self):
-        # Increment board, look up vulnerability/dealer, deal, return first obs
-        
-    def step(self):
-        # 1. Get current actor via gs.next_actor()
-        # 2. Get observation via gs.observation(actor)
-        # 3. If AUCTION: player.bid(obs) → gs.apply_call(action)
-        #    If PLAY:    player.play_card(obs) → gs.play_card(actor, action)
-        # 4. Return (next_obs, reward, done)
-        #    reward = (score_ns, score_ew) if done, else (0, 0)
-```
-
-Each `step()` call advances the game by exactly one action. The environment internally queries the appropriate player object. To train a neural network agent, replace one or more `Player` instances with your own implementation that reads the observation dict and returns an action.
-
-### Training loop pseudocode
-
-```python
-env = SelfPlayEnv([MyNNPlayer(0), RuleBasedPlayer(1),
-                   MyNNPlayer(2), RuleBasedPlayer(3)])
-
-for episode in range(num_episodes):
-    obs = env.reset()
-    transitions = []
-    done = False
-    while not done:
-        obs, reward, done = env.step()
-        # MyNNPlayer.play_card() internally stores (state, action) pairs
-    
-    # reward = (score_ns, score_ew)
-    # Use reward to compute policy gradient / TD update for MyNNPlayer
-```
-
-## Known Extension Points
-
-### Adding a neural network player
-1. Subclass `Player`
-2. In `bid()`: encode `obs['hand']`, `obs['calls']`, `obs['vulnerable']` → tensor → policy over `obs['valid_calls']`
-3. In `play_card()`: encode `obs['hand']`, `obs['dummy_hand']`, `obs['completed_tricks']`, `obs['current_trick']` → tensor → policy over `obs['valid_cards']`
-4. Mask invalid actions using the `valid_calls`/`valid_cards` lists
-
-### Adding conventions or systems
-The `SimpleHeuristicPlayer.bid()` method is a flat decision tree — extend it by adding branches for Stayman, Jacoby transfers, etc. The `RuleBasedPlayer.play_card()` method has hooks for defensive signals (attitude, count) in the `_find_sequence` helper.
+### Adding bidding conventions
+Extend `StateMachineBidder` in `ai/bidding_agent.py` with new phase handlers for Stayman, Jacoby transfers, etc.
 
 ### Double-dummy analysis
-The `PlayState` exposes all four hands in `self.hands` — a minimax solver can enumerate all legal plays via `valid_cards(seat)` and recurse through `play_card` / `_complete_trick` on a cloned state.
-
-### Extending scoring
-`score_rubber()` already handles rubber bridge. For IMPs or matchpoints, wrap `score()` output with the standard conversion tables.
+`PlayState` exposes all four hands — a minimax solver can enumerate all legal plays via `valid_cards(seat)` and recurse through cloned states.

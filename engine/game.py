@@ -17,9 +17,9 @@ VUL_SCHEDULE:
 """
 
 from typing import List, Dict, Type
-from state import GameState
-from player import Player
-from auction import PASS
+from .state import GameState
+from .player import Player
+from .auction import PASS
 
 SEATS = ['N', 'E', 'S', 'W']
 VUL_SCHEDULE = [

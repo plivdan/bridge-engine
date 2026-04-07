@@ -5,12 +5,12 @@ Uses the same check/section framework as test_bridge.py.
 """
 
 import sys, os
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from card import Card, Suit, Rank
-from auction import AuctionState, Bid, PASS, DOUBLE, REDOUBLE, make_bid
-from hand_eval import hcp, hand_shape, total_points, distribution_points
-from bidding_agent import StateMachineBidder
+from engine.card import Card, Suit, Rank
+from engine.auction import AuctionState, Bid, PASS, DOUBLE, REDOUBLE, make_bid
+from ai.hand_eval import hcp, hand_shape, total_points, distribution_points
+from ai.bidding_agent import StateMachineBidder
 
 PASS_COUNT = 0
 FAIL_COUNT = 0
@@ -220,7 +220,7 @@ import contextlib, io
 
 def run_auction(hands, dealer=0):
     """Run a full auction with SmartBidders and return the result."""
-    from state import GameState
+    from engine.state import GameState
     gs = GameState(board_num=1, vulnerable={'NS': False, 'EW': False}, dealer=dealer)
     gs.hands = hands
     gs.auction = AuctionState(dealer=dealer)

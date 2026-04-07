@@ -6,12 +6,12 @@ and ``StateMachineCardPlayer`` for card play (with card counting,
 finesse detection, and tactical defense).
 """
 
-from player import Player
-from card import Card
-from auction import Bid
-from bidding_agent import StateMachineBidder
-from cardplay_agent import StateMachineCardPlayer
-from bridge_params import BridgeParams
+from engine.player import Player
+from engine.card import Card
+from engine.auction import Bid
+from .bidding_agent import StateMachineBidder
+from .cardplay_agent import StateMachineCardPlayer
+from .bridge_params import BridgeParams
 
 
 class SmartPlayer(Player):

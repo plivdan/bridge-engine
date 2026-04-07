@@ -1,17 +1,17 @@
 """Empirical framework tests: params, data collection, tables, optimization."""
 
 import sys, os, random, contextlib, io, json, tempfile
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from bridge_params import BridgeParams
-from bridge_stats import collect_boards, records_to_csv, records_from_csv, analyze_records
-from bridge_tables import EmpiricalTables, expected_hcp_from_dist
-from smart_player import SmartPlayer
-from player import RuleBasedPlayer
-from game import Game
-from card import Card, Suit, Rank
-from auction import make_bid, PASS, AuctionState
-from bidding_agent import StateMachineBidder
+from ai.bridge_params import BridgeParams
+from empirical.bridge_stats import collect_boards, records_to_csv, records_from_csv, analyze_records
+from empirical.bridge_tables import EmpiricalTables, expected_hcp_from_dist
+from ai.smart_player import SmartPlayer
+from engine.player import RuleBasedPlayer
+from engine.game import Game
+from engine.card import Card, Suit, Rank
+from engine.auction import make_bid, PASS, AuctionState
+from ai.bidding_agent import StateMachineBidder
 
 PASS_COUNT = 0
 FAIL_COUNT = 0
@@ -146,7 +146,7 @@ for cat, dist in tables.partner_dists.items():
 section("OPTIMIZED VS DEFAULT BENCHMARK")
 
 # Load optimized params if available
-opt_path = os.path.join(os.path.dirname(__file__), 'params_optimized.json')
+opt_path = os.path.join(os.path.dirname(__file__), '..', 'config', 'params_optimized.json')
 if os.path.exists(opt_path):
     opt_params = BridgeParams.from_json(opt_path)
     default_params = BridgeParams()

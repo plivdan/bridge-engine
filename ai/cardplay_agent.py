@@ -17,9 +17,9 @@ from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Set, Tuple, Any
 from enum import Enum, auto
 
-from card import Card, Suit, Rank, DECK
-from play import Trick
-from bridge_params import BridgeParams
+from engine.card import Card, Suit, Rank, DECK
+from engine.play import Trick
+from .bridge_params import BridgeParams
 
 
 class PlayPhase(Enum):

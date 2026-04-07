@@ -16,14 +16,14 @@ from enum import Enum, auto
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any
 
-from card import Card, Suit, Rank
-from auction import Bid, PASS, DOUBLE, REDOUBLE, make_bid
-from hand_eval import (
+from engine.card import Card, Suit, Rank
+from engine.auction import Bid, PASS, DOUBLE, REDOUBLE, make_bid
+from .hand_eval import (
     hcp, hand_shape, total_points, distribution_points, support_points,
     suit_length, suit_quality, stopper, all_suits_stopped, rule_of_20,
     biddable_suit, quick_tricks, HandShape,
 )
-from bridge_params import BridgeParams
+from .bridge_params import BridgeParams
 
 
 class BidPhase(Enum):

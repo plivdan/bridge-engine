@@ -11,14 +11,14 @@ import io
 from dataclasses import dataclass, field, asdict
 from typing import List, Optional, Callable
 
-from card import Card, Suit, Rank, deal
-from auction import AuctionState
-from hand_eval import (
+from engine.card import Card, Suit, Rank, deal
+from engine.auction import AuctionState
+from ai.hand_eval import (
     hcp, hand_shape, total_points, distribution_points,
     losing_trick_count, quick_tricks, suit_length,
 )
-from state import GameState
-from game import VUL_SCHEDULE
+from engine.state import GameState
+from engine.game import VUL_SCHEDULE
 
 
 @dataclass

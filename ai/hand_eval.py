@@ -13,7 +13,7 @@ Key concepts:
 
 from dataclasses import dataclass
 from typing import Optional, List
-from card import Card, Suit, Rank
+from engine.card import Card, Suit, Rank
 
 
 # ---------------------------------------------------------------------------

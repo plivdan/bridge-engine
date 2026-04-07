@@ -6,7 +6,7 @@ distributions derived from actual game outcomes.
 
 from typing import List, Dict, Optional, Tuple
 from collections import defaultdict
-from bridge_stats import BoardRecord
+from .bridge_stats import BoardRecord
 
 
 def build_game_ev_table(records: List[BoardRecord]) -> Dict[Tuple, float]:

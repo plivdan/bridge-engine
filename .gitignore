@@ -1,2 +1,7 @@
 __pycache__/
+*.pyc
 game_data.csv
+*.egg-info/
+dist/
+build/
+.eggs/

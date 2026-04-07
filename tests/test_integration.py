@@ -5,12 +5,12 @@ and compatibility with existing engine tests.
 """
 
 import sys, os, random, contextlib, io
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from smart_player import SmartPlayer
-from player import RuleBasedPlayer, RandomPlayer
-from game import Game, SelfPlayEnv
-from hand_eval import hcp
+from ai.smart_player import SmartPlayer
+from engine.player import RuleBasedPlayer, RandomPlayer
+from engine.game import Game, SelfPlayEnv
+from ai.hand_eval import hcp
 
 PASS_COUNT = 0
 FAIL_COUNT = 0
@@ -107,11 +107,11 @@ check(True, f"SelfPlayEnv averages: NS={ns_avg:.1f} EW={ew_avg:.1f}")
 # ── BIDDING QUALITY: GAME REACHED WITH STRONG HANDS ──────────────
 section("BIDDING QUALITY")
 
-from card import deal, Suit
-from state import GameState
-from auction import AuctionState
-from bidding_agent import StateMachineBidder
-from game import VUL_SCHEDULE
+from engine.card import deal, Suit
+from engine.state import GameState
+from engine.auction import AuctionState
+from ai.bidding_agent import StateMachineBidder
+from engine.game import VUL_SCHEDULE
 
 random.seed(123)
 games_with_values = 0

@@ -13,9 +13,9 @@ Typical usage::
 
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any
-from card import Card, Suit, deal
-from auction import AuctionState, Bid, PASS
-from play import PlayState
+from .card import Card, Suit, deal
+from .auction import AuctionState, Bid, PASS
+from .play import PlayState
 
 SEATS = ['N', 'E', 'S', 'W']
 PARTNERSHIPS = {0: 'NS', 1: 'EW', 2: 'NS', 3: 'EW'}
@@ -172,7 +172,7 @@ class GameState:
         This method is called automatically by ``play_card`` and should
         not be invoked directly.
         """
-        from scoring import score
+        from .scoring import score
         contract, declarer, doubled, vul = self._contract_meta
         tricks = self.play.result()['declarer_tricks']
         s = score(contract, declarer, doubled, tricks, vul)

@@ -24,7 +24,7 @@ Typical usage::
 
 from dataclasses import dataclass, field
 from typing import Optional, List
-from card import Suit, SUIT_SYM
+from .card import Suit, SUIT_SYM
 
 PASS_BID = 'PASS'
 DOUBLE_BID = 'X'

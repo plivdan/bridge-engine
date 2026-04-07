@@ -16,8 +16,8 @@ Classes:
 import random
 from abc import ABC, abstractmethod
 from typing import Dict, Any
-from card import Suit, Rank, Card
-from auction import Bid, PASS, DOUBLE, REDOUBLE, make_bid
+from .card import Suit, Rank, Card
+from .auction import Bid, PASS, DOUBLE, REDOUBLE, make_bid
 
 class Player(ABC):
     """Abstract base class for all bridge player agents.

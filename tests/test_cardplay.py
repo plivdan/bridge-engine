@@ -5,14 +5,14 @@ Uses the same check/section framework as test_bridge.py.
 """
 
 import sys, os, io, contextlib
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from card import Card, Suit, Rank
-from play import PlayState, Trick
-from state import GameState
-from auction import AuctionState, make_bid, PASS
-from cardplay_agent import StateMachineCardPlayer, CardTracker
-from hand_eval import hcp
+from engine.card import Card, Suit, Rank
+from engine.play import PlayState, Trick
+from engine.state import GameState
+from engine.auction import AuctionState, make_bid, PASS
+from ai.cardplay_agent import StateMachineCardPlayer, CardTracker
+from ai.hand_eval import hcp
 
 PASS_COUNT = 0
 FAIL_COUNT = 0
@@ -264,7 +264,7 @@ check(card == Card(Rank.TWO, Suit.H),
 # ── CARD TRACKER ─────────────────────────────────────────────────
 section("CARD TRACKER")
 
-from card import DECK
+from engine.card import DECK
 
 my_hand = [Card(Rank.ACE, Suit.S), Card(Rank.KING, Suit.S)]
 dummy_hand = [Card(Rank.QUEEN, Suit.S), Card(Rank.JACK, Suit.S)]
