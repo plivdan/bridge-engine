@@ -133,6 +133,15 @@ MEDIUM_IMPACT_RANGES = {
     'rebid_med_max': [16, 17, 18],
 }
 
+CARDPLAY_RANGES = {
+    'trump_draw_min': [10, 11, 12, 13],
+    'cover_honor_min': [10, 11, 12],
+    'max_ruff_potential': [2, 3, 4],
+    'trump_management_mode': ['always', 'smart'],
+    'vul_open_adjust': [0, 1],
+    'vul_game_adjust': [0, 1],
+}
+
 
 if __name__ == '__main__':
     print('=== BRIDGE PARAMETER OPTIMIZATION ===')
@@ -158,20 +167,24 @@ if __name__ == '__main__':
     )
     print(f'\nPhase 2 complete: score {score2:+.1f} per board')
 
+    # Phase 3: Card play parameters
+    print('\nPhase 3: Card play + vulnerability parameters')
+    best3, score3 = coordinate_descent(
+        best2, CARDPLAY_RANGES,
+        num_boards=2000, seed=42, passes=2, verbose=True
+    )
+    print(f'\nPhase 3 complete: score {score3:+.1f} per board')
+
     # Save optimized params
-    best2.to_json(os.path.join(os.path.dirname(__file__), '..', 'config', 'params_optimized.json'))
+    best3.to_json(os.path.join(os.path.dirname(__file__), '..', 'config', 'params_optimized.json'))
     print(f'\nOptimized params saved to config/params_optimized.json')
     print(f'Total time: {time.time() - t0:.0f}s')
 
     # Show key changes
     print('\n=== KEY PARAMETER CHANGES ===')
-    for field_name in sorted(HIGH_IMPACT_RANGES.keys()):
+    all_ranges = {**HIGH_IMPACT_RANGES, **MEDIUM_IMPACT_RANGES, **CARDPLAY_RANGES}
+    for field_name in sorted(all_ranges.keys()):
         old = getattr(base, field_name)
-        new = getattr(best2, field_name)
+        new = getattr(best3, field_name)
         if old != new:
-            print(f'  {field_name}: {old} → {new}')
-    for field_name in sorted(MEDIUM_IMPACT_RANGES.keys()):
-        old = getattr(base, field_name)
-        new = getattr(best2, field_name)
-        if old != new:
-            print(f'  {field_name}: {old} → {new}')
+            print(f'  {field_name}: {old} -> {new}')
