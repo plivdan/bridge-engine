@@ -241,7 +241,7 @@ class GameState:
             'dealer': self.dealer,
             'phase': self.phase,
             'player': player,
-            'hand': list(self.hands.get(player, [])),
+            'hand': list(self.play.hands[player]) if self.play else list(self.hands.get(player, [])),
         }
         if self.auction:
             obs['calls'] = list(self.auction.calls)
@@ -251,7 +251,7 @@ class GameState:
             obs['declarer'] = self.auction.declarer
         if self.play:
             dummy = self.play.dummy
-            obs['dummy_hand'] = list(self.hands[dummy])
+            obs['dummy_hand'] = list(self.play.hands[dummy])
             obs['tricks_ns'] = self.play.tricks_ns
             obs['tricks_ew'] = self.play.tricks_ew
             obs['completed_tricks'] = list(self.play.tricks)
