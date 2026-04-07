@@ -176,29 +176,82 @@ class StateMachineBidder:
             return est
 
         first = partner_bids[0]
-        # Interpret partner's first bid
-        if first.level == 1 and first.strain == Suit.NT:
-            est.min_hcp, est.max_hcp = 15, 17
-            est.is_balanced = True
-        elif first.level == 2 and first.strain == Suit.NT:
-            est.min_hcp, est.max_hcp = 20, 21
-            est.is_balanced = True
-        elif first.level == 2 and first.strain == Suit.C:
-            est.min_hcp, est.max_hcp = 22, 40
-        elif first.level == 1:
-            est.min_hcp, est.max_hcp = 12, 21
-            if first.strain in (Suit.H, Suit.S):
-                est.known_suits[first.strain] = 5
-            else:
-                est.known_suits[first.strain] = 3
-        elif first.level >= 2:
-            # jump bid or response
-            est.min_hcp, est.max_hcp = 6, 18
-            if first.strain in (Suit.H, Suit.S):
-                est.known_suits[first.strain] = 5
+        my_bids_here = self._my_bids(calls, dealer)
+
+        # Did I bid before partner? If so, partner is RESPONDING (6-18),
+        # not OPENING (12-21).  Check by comparing indices in the call list.
+        partner_seat = (self.seat + 2) % 4
+        my_first_idx = None
+        partner_first_idx = None
+        for i, c in enumerate(calls):
+            seat_i = (dealer + i) % 4
+            if seat_i == self.seat and not c.special and my_first_idx is None:
+                my_first_idx = i
+            if seat_i == partner_seat and not c.special and partner_first_idx is None:
+                partner_first_idx = i
+
+        partner_is_responder = (my_first_idx is not None and partner_first_idx is not None
+                                and my_first_idx < partner_first_idx)
+
+        if partner_is_responder:
+            # Partner is RESPONDING to our opening
+            if first.level == 1 and first.strain == Suit.NT:
+                est.min_hcp, est.max_hcp = 6, 10  # 1NT response
+                est.is_balanced = True
+            elif first.level == 2 and first.strain == Suit.NT:
+                est.min_hcp, est.max_hcp = 10, 12  # 2NT response (invitational)
+                est.is_balanced = True
+            elif first.level == 3 and first.strain == Suit.NT:
+                est.min_hcp, est.max_hcp = 13, 15  # 3NT response
+                est.is_balanced = True
+            elif first.level == 1:
+                est.min_hcp, est.max_hcp = 6, 18  # new suit at 1-level
+                if first.strain in (Suit.H, Suit.S):
+                    est.known_suits[first.strain] = 4
+                else:
+                    est.known_suits[first.strain] = 4
+            elif first.level == 2:
+                # Simple raise = 6-10, new suit at 2 = 10+
+                if my_bids_here and first.strain == my_bids_here[0].strain:
+                    est.min_hcp, est.max_hcp = 6, 10  # simple raise
+                    est.known_suits[first.strain] = 3
+                else:
+                    est.min_hcp, est.max_hcp = 10, 18  # new suit at 2
+                    est.known_suits[first.strain] = 4
+            elif first.level == 3:
+                # Limit raise = 10-12
+                if my_bids_here and first.strain == my_bids_here[0].strain:
+                    est.min_hcp, est.max_hcp = 10, 12
+                    est.known_suits[first.strain] = 4
+                else:
+                    est.min_hcp, est.max_hcp = 10, 18
+            elif first.level >= 4:
+                # Game raise = 13+
+                est.min_hcp, est.max_hcp = 13, 18
+                if first.strain in (Suit.H, Suit.S):
+                    est.known_suits[first.strain] = 4
+        else:
+            # Partner is OPENING
+            if first.level == 1 and first.strain == Suit.NT:
+                est.min_hcp, est.max_hcp = 15, 17
+                est.is_balanced = True
+            elif first.level == 2 and first.strain == Suit.NT:
+                est.min_hcp, est.max_hcp = 20, 21
+                est.is_balanced = True
+            elif first.level == 2 and first.strain == Suit.C:
+                est.min_hcp, est.max_hcp = 22, 40
+            elif first.level == 1:
+                est.min_hcp, est.max_hcp = 12, 21
+                if first.strain in (Suit.H, Suit.S):
+                    est.known_suits[first.strain] = 5
+                else:
+                    est.known_suits[first.strain] = 3
+            elif first.level >= 2:
+                est.min_hcp, est.max_hcp = 6, 18
+                if first.strain in (Suit.H, Suit.S):
+                    est.known_suits[first.strain] = 5
 
         # If partner raised our suit, they show support
-        my_bids_here = self._my_bids(calls, dealer)
         if my_bids_here:
             my_strain = my_bids_here[0].strain
             for pb in partner_bids:
@@ -268,8 +321,10 @@ class StateMachineBidder:
             if b:
                 return b
 
-        # 1NT: 15-17 balanced with all stoppers
-        if 15 <= h <= 17 and shape.is_balanced and all_suits_stopped(hand):
+        # 1NT: 15-17 balanced.  18-19 balanced opens 1-suit and plans
+        # a jump rebid to 2NT, but we stretch to include them here for
+        # simplicity — the rebid logic now handles extras properly.
+        if 15 <= h <= 17 and shape.is_balanced:
             b = self._best_valid(1, Suit.NT, valid)
             if b:
                 return b
@@ -394,28 +449,32 @@ class StateMachineBidder:
         if h < 6:
             return PASS
 
-        # Major fit: raise
-        if strain in (Suit.H, Suit.S):
+        # Collect opponent's bid suits to avoid raising them
+        obs_calls = getattr(self, '_current_obs_calls', [])
+        opp_suits = set()
+        for i, c in enumerate(obs_calls):
+            if not c.special and (getattr(self, '_current_dealer', 0) + i) % 4 % 2 != self.seat % 2:
+                opp_suits.add(c.strain)
+
+        # Major fit: raise partner's suit (not opponent's!)
+        if strain in (Suit.H, Suit.S) and strain not in opp_suits:
             support = suit_length(hand, strain)
             if support >= 4 and h >= 13:
-                # jump to game
                 b = self._best_valid(4, strain, valid)
                 if b:
                     return b
             if support >= 4 and h >= 10:
-                # limit raise (jump raise)
                 b = self._best_valid(3, strain, valid)
                 if b:
                     return b
             if support >= 3 and h >= 6:
-                # simple raise
                 b = self._best_valid(2, strain, valid)
                 if b:
                     return b
 
-        # New suit at 1 level (6+ HCP)
+        # New suit at 1 level (6+ HCP), avoid opponent's suits
         for suit in (Suit.S, Suit.H):
-            if suit > strain and shape.length(suit) >= 4:
+            if suit > strain and suit not in opp_suits and shape.length(suit) >= 4:
                 b = self._cheapest_in_suit(suit, valid)
                 if b and b.level == 1:
                     return b
@@ -426,27 +485,33 @@ class StateMachineBidder:
             if b:
                 return b
 
-        # New suit at 2 level (10+ HCP)
+        # New suit at 2 level (10+ HCP), avoid opponent's suits
         if h >= 10:
             for suit in (Suit.S, Suit.H, Suit.D, Suit.C):
-                if suit != strain and shape.length(suit) >= 4:
+                if suit != strain and suit not in opp_suits and shape.length(suit) >= 4:
                     b = self._cheapest_in_suit(suit, valid)
                     if b:
                         return b
 
-        # 2NT (10-12, balanced, no fit)
-        if 10 <= h <= 12 and shape.is_balanced:
+        # 2NT (10-12, no fit)
+        if 10 <= h <= 12:
             b = self._best_valid(2, Suit.NT, valid)
             if b:
                 return b
 
-        # 3NT (13-15, balanced, stoppers)
-        if 13 <= h <= 15 and all_suits_stopped(hand):
+        # 3NT (13+, stoppers)
+        if h >= 13 and all_suits_stopped(hand):
             b = self._best_valid(3, Suit.NT, valid)
             if b:
                 return b
 
-        # Fallback: raise or pass
+        # 2NT as fallback with 13+ (even without all stoppers)
+        if h >= 13:
+            b = self._best_valid(2, Suit.NT, valid)
+            if b:
+                return b
+
+        # Fallback: raise partner or pass
         return PASS
 
     # ------------------------------------------------------------------
@@ -485,27 +550,30 @@ class StateMachineBidder:
             if b:
                 return b
 
-        # Minimum opener (12-14): rebid cheaply
+        # --- Minimum opener (12-14): rebid cheaply ---
         if h <= 14:
             # rebid 6+ card suit
             if shape.length(my_opening.strain) >= 6:
                 b = self._cheapest_in_suit(my_opening.strain, valid)
                 if b:
                     return b
-            # 1NT rebid (balanced)
-            if shape.is_balanced:
-                b = self._best_valid(1, Suit.NT, valid)
-                if b:
-                    return b
+            # 1NT rebid (balanced-ish)
+            b = self._best_valid(1, Suit.NT, valid)
+            if b:
+                return b
             # new suit at cheapest level
             for suit in (Suit.S, Suit.H, Suit.D, Suit.C):
                 if suit != my_opening.strain and shape.length(suit) >= 4:
                     b = self._cheapest_in_suit(suit, valid)
                     if b and b.level <= 2:
                         return b
+            # rebid own suit at cheapest level
+            b = self._cheapest_in_suit(my_opening.strain, valid)
+            if b:
+                return b
             return PASS
 
-        # Medium opener (15-17)
+        # --- Medium opener (15-17): show extras ---
         if h <= 17:
             # jump rebid own suit with 6+
             if shape.length(my_opening.strain) >= 6:
@@ -513,28 +581,71 @@ class StateMachineBidder:
                     b = make_bid(lv, my_opening.strain)
                     if b in valid:
                         return b
-            # 2NT
-            if shape.is_balanced:
-                b = self._best_valid(2, Suit.NT, valid)
-                if b:
-                    return b
+            # 2NT (shows 15-17, balanced-ish)
+            b = self._best_valid(2, Suit.NT, valid)
+            if b:
+                return b
+            # new suit (forcing, shows extras)
+            for suit in (Suit.S, Suit.H, Suit.D, Suit.C):
+                if suit != my_opening.strain and shape.length(suit) >= 4:
+                    b = self._cheapest_in_suit(suit, valid)
+                    if b:
+                        return b
+            # rebid own suit
+            b = self._cheapest_in_suit(my_opening.strain, valid)
+            if b:
+                return b
+            return PASS
 
-        # Strong (18+): jump to game or bid new suit forcing
-        if h >= 18:
+        # --- Strong (18-19): jump or bid game ---
+        if h <= 19:
             if fit:
                 target_lv, target_st = self._target_level(
                     total_points(hand, fit) + est.min_hcp, fit)
                 b = self._best_valid(target_lv, target_st, valid)
                 if b:
                     return b
-            # 3NT
-            if shape.is_balanced and all_suits_stopped(hand):
+            # 3NT with stoppers
+            if all_suits_stopped(hand):
                 b = self._best_valid(3, Suit.NT, valid)
                 if b:
                     return b
+            # 2NT
+            b = self._best_valid(2, Suit.NT, valid)
+            if b:
+                return b
+            # jump in own suit
+            if shape.length(my_opening.strain) >= 6:
+                b = self._best_valid(3, my_opening.strain, valid)
+                if b:
+                    return b
+            # new suit
+            for suit in (Suit.S, Suit.H, Suit.D, Suit.C):
+                if suit != my_opening.strain and shape.length(suit) >= 4:
+                    b = self._cheapest_in_suit(suit, valid)
+                    if b:
+                        return b
+            b = self._cheapest_in_suit(my_opening.strain, valid)
+            if b:
+                return b
+            return PASS
 
-        # Default: pass
-        return PASS
+        # --- Very strong (20+): bid game ---
+        if fit:
+            target_lv, target_st = self._target_level(
+                total_points(hand, fit) + est.min_hcp, fit)
+            b = self._best_valid(target_lv, target_st, valid)
+            if b:
+                return b
+        if all_suits_stopped(hand):
+            b = self._best_valid(3, Suit.NT, valid)
+            if b:
+                return b
+        b = self._best_valid(2, Suit.NT, valid)
+        if b:
+            return b
+        b = self._cheapest_in_suit(my_opening.strain, valid)
+        return b if b else PASS
 
     # ------------------------------------------------------------------
     # RESPONDER REBID
@@ -553,6 +664,15 @@ class StateMachineBidder:
         est = self._estimate_partner(partner_bids, calls, dealer)
         partner_est = est.min_hcp + (est.max_hcp - est.min_hcp) // 3
         combined = total_points(hand, fit) + partner_est
+
+        # Weak hands (< 10 HCP): pass unless we have a clear fit at a safe level
+        if h < 10:
+            if fit and combined >= 18:
+                # Raise partner's suit at cheapest level
+                b = self._cheapest_in_suit(fit, valid)
+                if b and b.level <= 3:
+                    return b
+            return PASS
 
         # Cap at game — slam goes through slam phase
         target_lv, target_st = self._target_level(min(combined, 32), fit)
@@ -599,8 +719,8 @@ class StateMachineBidder:
             if b:
                 return b
 
-        # Suit overcall: 8-16 HCP with 5+ card suit
-        if 8 <= h <= 16:
+        # Suit overcall: 10-16 HCP with 5+ card suit and quality
+        if 10 <= h <= 16:
             for suit in (Suit.S, Suit.H, Suit.D, Suit.C):
                 if shape.length(suit) >= 5 and suit_quality(hand, suit) >= 2:
                     b = self._cheapest_in_suit(suit, valid)
@@ -754,6 +874,10 @@ class StateMachineBidder:
         valid = obs['valid_calls']
         if len(valid) == 1:
             return valid[0]
+
+        # Stash calls for sub-methods that need opponent suit info
+        self._current_obs_calls = obs.get('calls', [])
+        self._current_dealer = obs.get('dealer', 0)
 
         phase = self._determine_phase(obs)
 
