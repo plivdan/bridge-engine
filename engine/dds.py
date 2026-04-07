@@ -215,6 +215,7 @@ class _DDSolver:
         # TT probe (trick boundaries only)
         key = None
         orig_alpha = alpha
+        orig_beta = beta
         if len(trick) == 0:
             key = (self.hands[0], self.hands[1], self.hands[2], self.hands[3], leader)
             entry = self.tt.get(key)
@@ -294,11 +295,11 @@ class _DDSolver:
             if alpha >= beta:
                 break
 
-        # TT store
+        # TT store — use original bounds, not search-modified ones
         if key is not None:
             if best <= orig_alpha:
                 self.tt[key] = (_UPPER, best)
-            elif best >= beta:
+            elif best >= orig_beta:
                 self.tt[key] = (_LOWER, best)
             else:
                 self.tt[key] = (_EXACT, best)

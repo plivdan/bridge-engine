@@ -132,21 +132,39 @@ class StateMachineBidder:
 
     def _detected_fit(self, my_bids: list, partner_bids: list,
                       hand: List[Card]) -> Optional[Suit]:
-        """Return agreed trump suit if an 8+ card fit is likely."""
+        """Return best agreed trump suit if an 8+ card fit is likely.
+
+        Checks all suits and returns the one with the longest combined
+        holding, preferring majors over minors.
+        """
+        best_suit = None
+        best_len = 0
         for suit in (Suit.S, Suit.H, Suit.D, Suit.C):
             my_len = suit_length(hand, suit)
             partner_bid_suit = any(b.strain == suit for b in partner_bids)
             i_bid_suit = any(b.strain == suit for b in my_bids)
+            # Estimate combined length
+            partner_min = 0
+            if partner_bid_suit:
+                partner_min = 4  # bid promises at least 4
+            fit_found = False
             # partner bid the suit (promises 4+) and I have 4+
             if partner_bid_suit and my_len >= self.params.fit_min_support_general:
-                return suit
+                fit_found = True
             # I bid the suit (promise 5+ major, 3+ minor) and partner raised
             if i_bid_suit and partner_bid_suit:
-                return suit
-            # partner bid and I have 3+ support
+                fit_found = True
+            # partner bid and I have 3+ support in a major
             if partner_bid_suit and my_len >= self.params.fit_min_support_major and suit in (Suit.H, Suit.S):
-                return suit
-        return None
+                fit_found = True
+
+            if fit_found:
+                combined = my_len + partner_min
+                # Prefer longer fits; break ties by suit rank (majors first)
+                if combined > best_len or (combined == best_len and best_suit is None):
+                    best_len = combined
+                    best_suit = suit
+        return best_suit
 
     def _target_level(self, combined: int, fit: Optional[Suit],
                       hand: Optional[List[Card]] = None) -> tuple:

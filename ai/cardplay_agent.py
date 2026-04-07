@@ -104,8 +104,8 @@ class CardTracker:
                             self.likely_missing[seat].add(uc)
 
     def cards_outstanding(self, suit: Suit) -> List[Card]:
-        """Cards in *suit* that are unplayed and not in known hands."""
-        return sorted([c for c in self.unknown if c.suit == suit and c not in self.played],
+        """Cards in *suit* not in any known hand and not yet played."""
+        return sorted([c for c in self.unknown if c.suit == suit],
                       key=lambda c: c.rank, reverse=True)
 
     def high_card_master(self, suit: Suit) -> Optional[Card]:
@@ -719,8 +719,10 @@ class StateMachineCardPlayer:
         best_c = trick.cards[trick.leader]
         for p, c in trick.cards.items():
             if c.suit == best_c.suit and c.rank > best_c.rank:
+                # Same suit (including trump vs trump): higher rank wins
                 best_c, best_p = c, p
             elif trump and c.suit == trump and best_c.suit != trump:
+                # First trump beats any non-trump
                 best_c, best_p = c, p
         return best_p
 
@@ -872,30 +874,17 @@ class StateMachineCardPlayer:
         # Build full hand map
         dummy_seat = (declarer + 2) % 4
         all_hands = dict(opp_hands)
-        # Our side's hands: remove cards already played in current trick
-        my_remaining = [c for c in hand if c != chosen_card]
-        dum_remaining = list(dummy_hand)
 
-        # Figure out which seat we're playing from
+        # Assign declarer and dummy hands, removing the chosen card
+        # from whichever seat is currently playing
         if current_seat == dummy_seat:
-            dum_remaining = [c for c in dum_remaining if c != chosen_card]
-        else:
-            my_remaining = [c for c in my_remaining if c != chosen_card]
-
-        all_hands[self.seat] = my_remaining
-        partner_seat = (self.seat + 2) % 4
-        if partner_seat == dummy_seat:
-            all_hands[partner_seat] = dum_remaining
-        elif partner_seat == declarer:
-            all_hands[partner_seat] = dum_remaining if self.seat != declarer else my_remaining
-
-        # Actually, let's simplify: just assign known hands
-        all_hands[declarer] = [c for c in hand if c != chosen_card] if self.seat == declarer else list(hand)
-        all_hands[dummy_seat] = list(dummy_hand)
-        if current_seat == dummy_seat:
+            # Playing from dummy: remove chosen_card from dummy
+            all_hands[declarer] = list(hand)
             all_hands[dummy_seat] = [c for c in dummy_hand if c != chosen_card]
-        elif current_seat != dummy_seat and self.seat == declarer:
+        else:
+            # Playing from declarer's hand: remove chosen_card from hand
             all_hands[declarer] = [c for c in hand if c != chosen_card]
+            all_hands[dummy_seat] = list(dummy_hand)
 
         # Simulate remaining tricks with greedy play
         return self._greedy_playout(
