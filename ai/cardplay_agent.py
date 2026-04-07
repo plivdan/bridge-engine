@@ -115,30 +115,17 @@ def _heuristic_follow(seat: int, hand: List[Card], led_suit: Suit,
 
 def _heuristic_lead(seat: int, hand: List[Card],
                     trump: Optional[Suit], declarer: int) -> Card:
-    """Heuristic card selection for leading (MC simulation).
+    """Lead selection for MC simulation.
 
-    Leads from longest suit, lowest card (to preserve high cards).
-    Avoids leading trump. Prefers established high cards.
+    In MC playout there's no partner communication, so developing
+    suits via low leads doesn't work. Instead, simply lead the
+    highest card available (cash tricks immediately). The real
+    intelligence in MC comes from the follow heuristics.
+
+    Real-game leads (4th best, sequences, partner's suit) are
+    handled by the main agent's _opening_lead/_defender_lead.
     """
-    # Group by suit, skip trump
-    suits = {}
-    for c in hand:
-        if c.suit != trump:
-            suits.setdefault(c.suit, []).append(c)
-
-    # If only trumps left, lead trump
-    if not suits:
-        suits = {}
-        for c in hand:
-            suits.setdefault(c.suit, []).append(c)
-
-    # Prefer longest suit; break ties by highest top card
-    best_suit_cards = max(suits.values(),
-                         key=lambda cards: (len(cards),
-                                            max(c.rank for c in cards)))
-
-    # Lead top card from longest suit (cash winners first)
-    return max(best_suit_cards, key=lambda c: c.rank)
+    return max(hand, key=lambda c: c.rank)
 
 
 # ---------------------------------------------------------------------------
@@ -955,80 +942,74 @@ class StateMachineCardPlayer:
 
         opp_remaining = {s: cards_per_seat[s] for s in opp_seats}
 
-        # Score each candidate card
+        # Pre-compute void sets for fast rejection during dealing
+        void_suits = {}
+        if self.tracker:
+            for s in opp_seats:
+                void_suits[s] = self.tracker.shown_void.get(s, set())
+        else:
+            for s in opp_seats:
+                void_suits[s] = set()
+
+        dummy_seat = (declarer + 2) % 4
+
+        # Score each candidate card with early termination
         N = self.params.monte_carlo_samples
-        scores = {}
+        scores = {c: 0 for c in valid}
 
         for card in valid:
-            total_tricks = 0
             for _ in range(N):
-                tricks = self._simulate_one(
-                    card, unknown, opp_seats, opp_remaining,
-                    hand, dummy_hand, completed, current_trick,
-                    trump_suit, declarer, current_seat, is_declarer_side
+                tricks = self._simulate_one_fast(
+                    card, unknown, opp_seats, opp_remaining, void_suits,
+                    hand, dummy_hand, current_trick,
+                    trump_suit, declarer, dummy_seat, current_seat
                 )
-                total_tricks += tricks
-            scores[card] = total_tricks
+                scores[card] += tricks
 
         return max(valid, key=lambda c: scores[c])
 
-    def _simulate_one(self, chosen_card, unknown, opp_seats, opp_remaining,
-                      hand, dummy_hand, completed, current_trick,
-                      trump_suit, declarer, current_seat, is_declarer_side):
-        """Simulate one random deal and count tricks for declarer side."""
-        # Assign unknown cards to opponents respecting voids
+    def _simulate_one_fast(self, chosen_card, unknown, opp_seats, opp_remaining,
+                           void_suits, hand, dummy_hand, current_trick,
+                           trump_suit, declarer, dummy_seat, current_seat):
+        """Fast single simulation: deal cards, play out, count tricks."""
+        # Shuffle unknown cards (in-place for speed, restored by caller context)
         shuffled = list(unknown)
         random.shuffle(shuffled)
 
-        opp_hands = {s: [] for s in opp_seats}
-        # Respect known voids
-        void_cards = {s: [] for s in opp_seats}
-        non_void = list(shuffled)
+        # Fast dealing: single pass through shuffled cards
+        opp_a, opp_b = opp_seats[0], opp_seats[1]
+        need_a = opp_remaining.get(opp_a, 0)
+        need_b = opp_remaining.get(opp_b, 0)
+        voids_a = void_suits[opp_a]
+        voids_b = void_suits[opp_b]
+        hand_a = []
+        hand_b = []
+        overflow = []
 
-        if self.tracker:
-            for s in opp_seats:
-                for c in shuffled:
-                    if c.suit in self.tracker.shown_void.get(s, set()):
-                        void_cards[s].append(c)
+        for c in shuffled:
+            if len(hand_a) < need_a and c.suit not in voids_a:
+                hand_a.append(c)
+            elif len(hand_b) < need_b and c.suit not in voids_b:
+                hand_b.append(c)
+            else:
+                overflow.append(c)
 
-        # Remove void-violating cards, assign rest proportionally
-        available = list(shuffled)
-        for s in opp_seats:
-            need = opp_remaining.get(s, 0)
-            assigned = 0
-            for c in available[:]:
-                if assigned >= need:
-                    break
-                # Skip if this opponent is void in this suit
-                if self.tracker and c.suit in self.tracker.shown_void.get(s, set()):
-                    continue
-                opp_hands[s].append(c)
-                available.remove(c)
-                assigned += 1
+        # Assign overflow (cards rejected by voids)
+        for c in overflow:
+            if len(hand_a) < need_a:
+                hand_a.append(c)
+            elif len(hand_b) < need_b:
+                hand_b.append(c)
 
-        # Assign remaining cards to whoever still needs them
-        for s in opp_seats:
-            need = opp_remaining.get(s, 0) - len(opp_hands[s])
-            while need > 0 and available:
-                opp_hands[s].append(available.pop(0))
-                need -= 1
-
-        # Build full hand map
-        dummy_seat = (declarer + 2) % 4
-        all_hands = dict(opp_hands)
-
-        # Assign declarer and dummy hands, removing the chosen card
-        # from whichever seat is currently playing
+        # Build hand map
+        all_hands = {opp_a: hand_a, opp_b: hand_b}
         if current_seat == dummy_seat:
-            # Playing from dummy: remove chosen_card from dummy
             all_hands[declarer] = list(hand)
             all_hands[dummy_seat] = [c for c in dummy_hand if c != chosen_card]
         else:
-            # Playing from declarer's hand: remove chosen_card from hand
             all_hands[declarer] = [c for c in hand if c != chosen_card]
             all_hands[dummy_seat] = list(dummy_hand)
 
-        # Simulate remaining tricks with greedy play
         return self._greedy_playout(
             chosen_card, current_trick, all_hands,
             trump_suit, declarer, dummy_seat, current_seat
