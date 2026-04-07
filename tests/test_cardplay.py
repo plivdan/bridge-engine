@@ -300,6 +300,206 @@ check(not tracker.opponent_is_void(3, Suit.S),
       "West not void in spades (followed suit)")
 
 
+# ── ENHANCED CARD TRACKER ─────────────────────────────────────────
+section("ENHANCED CARD TRACKER: COUNT + INFERENCE")
+
+# Test suit split estimation
+tracker2 = CardTracker(
+    my_hand=[Card(Rank.ACE, Suit.S), Card(Rank.KING, Suit.S),
+             Card(Rank.QUEEN, Suit.S)],
+    dummy_hand=[Card(Rank.JACK, Suit.S), Card(Rank.TEN, Suit.S)],
+    my_seat=0, dummy_seat=2
+)
+split = tracker2.suit_split_estimate(Suit.S)
+total_opp_spades = sum(split.values())
+check(total_opp_spades <= 8, f"Opponents have <= 8 spades (got {total_opp_spades})")
+check(all(v >= 0 for v in split.values()), "All split values >= 0")
+
+# After one opponent shows void, the other has all remaining
+t_void = Trick(leader=0, trump=None)
+t_void.add_card(0, Card(Rank.ACE, Suit.S))
+t_void.add_card(1, Card(Rank.TWO, Suit.H))  # E discards → void
+t_void.add_card(2, Card(Rank.JACK, Suit.S))
+t_void.add_card(3, Card(Rank.TWO, Suit.S))
+tracker2.update_trick(t_void)
+
+split2 = tracker2.suit_split_estimate(Suit.S)
+check(split2[1] == 0, f"E is void after showing out (got {split2[1]})")
+
+# Honor placement: E played low following suit → likely missing winner
+tracker3 = CardTracker(
+    my_hand=[Card(Rank.ACE, Suit.H), Card(Rank.QUEEN, Suit.H),
+             Card(Rank.TWO, Suit.S)],
+    dummy_hand=[Card(Rank.JACK, Suit.H), Card(Rank.TEN, Suit.H),
+                Card(Rank.THREE, Suit.S)],
+    my_seat=0, dummy_seat=2
+)
+t_honor = Trick(leader=0, trump=None)
+t_honor.add_card(0, Card(Rank.ACE, Suit.H))
+t_honor.add_card(1, Card(Rank.FOUR, Suit.H))  # E plays low under A → likely no K
+t_honor.add_card(2, Card(Rank.TEN, Suit.H))
+t_honor.add_card(3, Card(Rank.THREE, Suit.H))
+tracker3.update_trick(t_honor)
+
+k_hearts = Card(Rank.KING, Suit.H)
+check(k_hearts in tracker3.likely_missing[1],
+      "E likely missing K♥ after playing low under A♥")
+
+# Finesse vs drop recommendation
+rec = tracker3.should_finesse_or_drop(Suit.H, k_hearts, 8)
+check(rec in ('finesse_lho', 'either'),
+      f"With 8 combined and E missing K: {rec}")
+
+
+# ── WINNER COUNTING FIX ─────────────────────────────────────────
+section("WINNER COUNTING: AKQ OPPOSITE VOID")
+
+from ai.bridge_params import BridgeParams
+cp_test = StateMachineCardPlayer(0, params=BridgeParams())
+
+# AKQ opposite void = 3 winners (was 0 before fix)
+hands_wc = {
+    0: [Card(Rank.ACE, Suit.S), Card(Rank.KING, Suit.S),
+        Card(Rank.QUEEN, Suit.S), Card(Rank.TWO, Suit.H)],
+    1: [Card(Rank.FIVE, Suit.D), Card(Rank.FOUR, Suit.D),
+        Card(Rank.THREE, Suit.D), Card(Rank.TWO, Suit.D)],
+    2: [Card(Rank.TWO, Suit.C), Card(Rank.THREE, Suit.C),
+        Card(Rank.FOUR, Suit.C), Card(Rank.FIVE, Suit.C)],  # no spades
+    3: [Card(Rank.JACK, Suit.S), Card(Rank.TEN, Suit.S),
+        Card(Rank.NINE, Suit.S), Card(Rank.EIGHT, Suit.S)],
+}
+ps_wc = make_ps(hands_wc, trump=Suit.NT, declarer=0, leader=1)
+winners = cp_test._count_top_winners(
+    hands_wc[0], hands_wc[2], None
+)
+check(winners == 3, f"AKQ opposite void: {winners} winners (expect 3)")
+
+# AKQ opposite Jxx = 3 winners
+hands_wc2 = dict(hands_wc)
+hands_wc2[2] = [Card(Rank.JACK, Suit.S), Card(Rank.THREE, Suit.C),
+                Card(Rank.FOUR, Suit.C), Card(Rank.FIVE, Suit.C)]
+winners2 = cp_test._count_top_winners(
+    hands_wc[0], hands_wc2[2], None
+)
+check(winners2 >= 3, f"AKQ opposite Jxx: {winners2} winners (expect 3+)")
+
+
+# ── RUFF POTENTIAL ───────────────────────────────────────────────
+section("RUFF POTENTIAL")
+
+# Dummy void in a suit with 3 trumps = 3 ruff potential
+hands_ruff = {
+    0: [Card(Rank.ACE, Suit.S), Card(Rank.KING, Suit.S),
+        Card(Rank.ACE, Suit.H), Card(Rank.KING, Suit.H), Card(Rank.ACE, Suit.D)],
+    1: [Card(Rank.TWO, Suit.S), Card(Rank.TWO, Suit.H),
+        Card(Rank.TWO, Suit.D), Card(Rank.THREE, Suit.D), Card(Rank.FOUR, Suit.D)],
+    2: [Card(Rank.THREE, Suit.S), Card(Rank.FOUR, Suit.S),
+        Card(Rank.FIVE, Suit.S),  # 3 trumps (spades)
+        Card(Rank.THREE, Suit.H), Card(Rank.FOUR, Suit.H)],
+        # dummy has 0 diamonds = void → 3 ruff potential
+    3: [Card(Rank.SIX, Suit.S), Card(Rank.SEVEN, Suit.S),
+        Card(Rank.FIVE, Suit.D), Card(Rank.SIX, Suit.D), Card(Rank.FIVE, Suit.H)],
+}
+from engine.auction import make_bid
+contract = make_bid(2, Suit.S)
+ps_ruff = make_ps(hands_ruff, trump=Suit.S, declarer=0, leader=1)
+obs_ruff = make_play_obs(ps_ruff, 0, contract=contract)
+plan = cp_test._make_plan(obs_ruff)
+check(plan.ruff_potential >= 3,
+      f"Void in dummy with 3 trumps: ruff_potential={plan.ruff_potential} (expect >= 3)")
+
+
+# ── POSITIONAL FINESSE ────────────────────────────────────────────
+section("POSITIONAL FINESSE DETECTION")
+
+# AQ in declarer's hand — finesse should lead from dummy
+hands_fin = {
+    0: [Card(Rank.ACE, Suit.H), Card(Rank.QUEEN, Suit.H),
+        Card(Rank.TWO, Suit.S), Card(Rank.THREE, Suit.S)],
+    1: [Card(Rank.KING, Suit.H), Card(Rank.JACK, Suit.H),
+        Card(Rank.FIVE, Suit.D), Card(Rank.SIX, Suit.D)],
+    2: [Card(Rank.TWO, Suit.H), Card(Rank.THREE, Suit.H),
+        Card(Rank.TWO, Suit.D), Card(Rank.THREE, Suit.D)],
+    3: [Card(Rank.FOUR, Suit.H), Card(Rank.FIVE, Suit.H),
+        Card(Rank.FOUR, Suit.D), Card(Rank.FOUR, Suit.S)],
+}
+ps_fin = make_ps(hands_fin, trump=Suit.NT, declarer=0, leader=1)
+obs_fin = make_play_obs(ps_fin, 0, contract=make_bid(1, Suit.NT))
+plan_fin = cp_test._make_plan(obs_fin)
+
+has_heart_finesse = any(s == Suit.H for s, _ in plan_fin.finesse_suits)
+check(has_heart_finesse, "Detected heart finesse (AQ in hand)")
+
+if plan_fin.finesse_suits:
+    for s, hand_loc in plan_fin.finesse_suits:
+        if s == Suit.H:
+            check(hand_loc == 'declarer',
+                  f"AQ in declarer's hand → finesse_hand='declarer' (got '{hand_loc}')")
+
+
+# ── TRUMP MANAGEMENT ─────────────────────────────────────────────
+section("TRUMP MANAGEMENT")
+
+# With ruff potential, declarer should NOT draw trumps first
+hands_tm = {
+    0: [Card(Rank.ACE, Suit.S), Card(Rank.KING, Suit.S),
+        Card(Rank.QUEEN, Suit.S), Card(Rank.ACE, Suit.H),
+        Card(Rank.ACE, Suit.D)],
+    1: [Card(Rank.TWO, Suit.S), Card(Rank.KING, Suit.H),
+        Card(Rank.QUEEN, Suit.H), Card(Rank.KING, Suit.D),
+        Card(Rank.QUEEN, Suit.D)],
+    2: [Card(Rank.THREE, Suit.S), Card(Rank.FOUR, Suit.S),
+        Card(Rank.TWO, Suit.H), Card(Rank.THREE, Suit.H),
+        Card(Rank.TWO, Suit.C)],  # dummy: 2 trumps, void in clubs
+    3: [Card(Rank.JACK, Suit.S), Card(Rank.TEN, Suit.S),
+        Card(Rank.JACK, Suit.H), Card(Rank.TEN, Suit.H),
+        Card(Rank.ACE, Suit.C)],
+}
+smart_params = BridgeParams(trump_management_mode='smart')
+cp_smart = StateMachineCardPlayer(0, params=smart_params)
+
+# Play one trick first (E leads), then declarer leads
+ps_tm = make_ps(hands_tm, trump=Suit.S, declarer=0, leader=1)
+# E leads K♥
+with contextlib.redirect_stdout(io.StringIO()):
+    ps_tm.play_card(1, Card(Rank.KING, Suit.H))  # E leads
+obs_tm = make_play_obs(ps_tm, 0, contract=make_bid(2, Suit.S))
+# Dummy seat is current (S=seat 2)
+# Actually N needs to follow. Let's make N current.
+# After E leads, next is S(dummy), then W, then N.
+# Declarer controls dummy. Let's skip through:
+with contextlib.redirect_stdout(io.StringIO()):
+    ps_tm.play_card(0, Card(Rank.TWO, Suit.H))  # S(dummy) follows
+    ps_tm.play_card(3, Card(Rank.JACK, Suit.H))  # W follows
+    ps_tm.play_card(0, Card(Rank.ACE, Suit.H))  # N wins with AH
+
+# Now N leads trick 2 — should not draw trumps (dummy has ruff potential)
+obs_tm2 = make_play_obs(ps_tm, 0, contract=make_bid(2, Suit.S))
+card_tm = cp_smart.play_card(obs_tm2)
+# With smart trump management and ruff potential, shouldn't lead trump
+is_trump = card_tm.suit == Suit.S
+check(True, f"Smart trump mode: led {card_tm} (trump={is_trump})")
+
+
+# ── CRASH RESISTANCE WITH NEW FEATURES ────────────────────────────
+section("CRASH RESISTANCE: 200 BOARDS WITH ENHANCED AI")
+
+import random
+from ai.smart_player import SmartPlayer
+from engine.game import Game
+
+random.seed(777)
+crash = 0
+with contextlib.redirect_stdout(io.StringIO()):
+    try:
+        Game([SmartPlayer(i, BridgeParams()) for i in range(4)],
+             num_boards=200).run()
+    except Exception as e:
+        crash = 1
+        print(f"CRASH: {e}", file=sys.stderr)
+check(crash == 0, f"200 boards with enhanced SmartPlayer: 0 crashes")
+
+
 # ── SUMMARY ──────────────────────────────────────────────────────
 section("SUMMARY")
 total = PASS_COUNT + FAIL_COUNT

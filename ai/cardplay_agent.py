@@ -38,8 +38,10 @@ class PlayPhase(Enum):
 class CardTracker:
     """Tracks played cards and infers remaining holdings.
 
-    Initialized with the player's own hand and dummy's hand (if visible).
-    Updated after each completed trick.
+    Enhanced with:
+    - Count tracking: estimated cards per seat per suit
+    - Honor placement inference: likely missing high cards
+    - Vacant places suit split estimation
     """
 
     def __init__(self, my_hand: List[Card], dummy_hand: Optional[List[Card]],
@@ -51,20 +53,55 @@ class CardTracker:
 
         # All cards in the deck
         all_cards = set(DECK)
-        # Cards we know the location of
         known = set(my_hand)
         if dummy_hand:
             known |= set(dummy_hand)
         self.unknown = all_cards - known
 
+        # Count tracking: remaining cards per seat per suit (-1 = unknown)
+        # For known hands (my_seat, dummy_seat) we know exactly.
+        # For opponents, we track only total remaining and voids.
+        self.opp_seats = [s for s in range(4) if s != my_seat and s != dummy_seat]
+        self.opp_remaining: Dict[int, int] = {s: 13 for s in self.opp_seats}
+        self.cards_played_by: Dict[int, List[Card]] = {i: [] for i in range(4)}
+
+        # Honor placement: cards an opponent likely does NOT hold
+        # (inferred when they play low following suit with a winning card available)
+        self.likely_missing: Dict[int, Set[Card]] = {s: set() for s in range(4)}
+
     def update_trick(self, trick: Trick):
-        """Record a completed trick."""
+        """Record a completed trick and infer information."""
         led = trick.led_suit()
+        winner_seat = trick.winner()
+        winning_card = trick.cards[winner_seat]
+
         for seat, card in trick.cards.items():
             self.played.add(card)
             self.unknown.discard(card)
+            self.cards_played_by[seat].append(card)
+
+            if seat in self.opp_remaining:
+                self.opp_remaining[seat] -= 1
+
+            # Void inference
             if led and card.suit != led:
                 self.shown_void[seat].add(led)
+
+        # Honor placement inference: if a defender followed suit with a
+        # low card, they likely don't hold high cards in that suit
+        # (especially honors they could have played but chose not to)
+        if led:
+            for seat, card in trick.cards.items():
+                if seat == self.my_seat or seat == self.dummy_seat:
+                    continue
+                if card.suit == led:
+                    # This opponent played 'card' in the led suit
+                    # They likely don't hold unknown cards ranked higher
+                    # than what they played (they would have played higher
+                    # to try to win, or at least signal)
+                    for uc in list(self.unknown):
+                        if uc.suit == led and uc.rank > card.rank:
+                            self.likely_missing[seat].add(uc)
 
     def cards_outstanding(self, suit: Suit) -> List[Card]:
         """Cards in *suit* that are unplayed and not in known hands."""
@@ -88,6 +125,61 @@ class CardTracker:
     def opponent_is_void(self, seat: int, suit: Suit) -> bool:
         """True if *seat* has shown out of *suit*."""
         return suit in self.shown_void[seat]
+
+    def suit_split_estimate(self, suit: Suit) -> Dict[int, int]:
+        """Estimate how cards in *suit* split between opponents.
+
+        Uses vacant places: opponents with more total remaining cards
+        are more likely to hold cards in the given suit.
+
+        Returns:
+            Dict mapping opponent seat -> estimated cards in suit.
+        """
+        outstanding = self.cards_outstanding(suit)
+        n_outstanding = len(outstanding)
+        if n_outstanding == 0:
+            return {s: 0 for s in self.opp_seats}
+
+        # Vacant places method
+        total_vacant = sum(self.opp_remaining[s] for s in self.opp_seats)
+        if total_vacant == 0:
+            return {s: 0 for s in self.opp_seats}
+
+        result = {}
+        for s in self.opp_seats:
+            if suit in self.shown_void[s]:
+                result[s] = 0
+            else:
+                # Proportional to remaining hand size
+                result[s] = round(n_outstanding * self.opp_remaining[s] / total_vacant)
+
+        return result
+
+    def should_finesse_or_drop(self, suit: Suit, missing_honor: Card,
+                                total_combined: int) -> str:
+        """Recommend finesse vs drop for a missing honor.
+
+        Based on the restricted choice principle and vacant places:
+        - With 9+ combined cards missing Q: play for the drop
+        - With 8 combined: finesse (slightly better)
+        - Honor in likely_missing for one opponent: finesse the other
+
+        Returns:
+            'drop', 'finesse_lho', 'finesse_rho', or 'either'
+        """
+        lho = (self.my_seat + 1) % 4
+        rho = (self.my_seat + 3) % 4
+
+        # Check likely_missing inference
+        if missing_honor in self.likely_missing.get(lho, set()):
+            return 'finesse_lho'  # LHO doesn't have it, finesse RHO
+        if missing_honor in self.likely_missing.get(rho, set()):
+            return 'finesse_rho'
+
+        # Standard guideline: "eight ever, nine never"
+        if total_combined >= 9:
+            return 'drop'
+        return 'either'  # finesse is slightly better with 8
 
 
 # ---------------------------------------------------------------------------
