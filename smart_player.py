@@ -11,6 +11,7 @@ from card import Card
 from auction import Bid
 from bidding_agent import StateMachineBidder
 from cardplay_agent import StateMachineCardPlayer
+from bridge_params import BridgeParams
 
 
 class SmartPlayer(Player):
@@ -20,10 +21,11 @@ class SmartPlayer(Player):
         seat: Seat index (0=N, 1=E, 2=S, 3=W).
     """
 
-    def __init__(self, seat: int):
+    def __init__(self, seat: int, params=None):
         super().__init__(seat)
-        self.bidder = StateMachineBidder(seat)
-        self.card_player = StateMachineCardPlayer(seat)
+        self.params = params or BridgeParams()
+        self.bidder = StateMachineBidder(seat, params=self.params)
+        self.card_player = StateMachineCardPlayer(seat, params=self.params)
 
     def bid(self, obs) -> Bid:
         return self.bidder.bid(obs)

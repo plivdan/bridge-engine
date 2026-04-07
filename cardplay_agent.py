@@ -18,6 +18,7 @@ from enum import Enum, auto
 
 from card import Card, Suit, Rank, DECK
 from play import Trick
+from bridge_params import BridgeParams
 
 
 class PlayPhase(Enum):
@@ -113,10 +114,11 @@ class StateMachineCardPlayer:
         seat: Seat index (0=N, 1=E, 2=S, 3=W).
     """
 
-    def __init__(self, seat: int):
+    def __init__(self, seat: int, params=None):
         self.seat = seat
-        self.tracker: Optional[CardTracker] = None
-        self.plan: Optional[DeclarerPlan] = None
+        self.params = params or BridgeParams()
+        self.tracker = None
+        self.plan = None
         self._last_trick_count = -1
 
     # ------------------------------------------------------------------
@@ -341,7 +343,7 @@ class StateMachineCardPlayer:
             # Check for 2+ consecutive honors (KQJ, QJT, etc.)
             # Skip Ace-led sequences — AK is better led as 4th-best from length
             for i in range(len(cards) - 1):
-                if (cards[i].rank >= Rank.TEN and
+                if (cards[i].rank >= self.params.sequence_min_rank and
                         cards[i].rank <= Rank.KING and
                         cards[i].rank - cards[i + 1].rank == 1):
                     if best is None or cards[i].rank > best.rank:
@@ -428,7 +430,7 @@ class StateMachineCardPlayer:
         if trump_suit:
             trump_cards = sorted([c for c in valid if c.suit == trump_suit],
                                  key=lambda c: c.rank, reverse=True)
-            if trump_cards and trump_cards[0].rank >= Rank.QUEEN:
+            if trump_cards and trump_cards[0].rank >= self.params.trump_draw_min:
                 return trump_cards[0]
 
         # Lead highest card
@@ -539,7 +541,7 @@ class StateMachineCardPlayer:
             if not partner_led and len(trick.cards) == 1:
                 # Second hand
                 led_card = trick.cards[trick.leader]
-                if led_card.rank >= Rank.JACK:
+                if led_card.rank >= self.params.cover_honor_min:
                     covers = [c for c in following if c.rank > led_card.rank]
                     if covers:
                         return min(covers, key=lambda c: c.rank)

@@ -95,41 +95,47 @@ def hand_shape(hand: List[Card]) -> HandShape:
     )
 
 
-def distribution_points(hand: List[Card]) -> int:
+def distribution_points(hand: List[Card], params=None) -> int:
     """Shortness points for opener: void=3, singleton=2, doubleton=1."""
+    void_pts = params.dist_void if params is not None else 3
+    sing_pts = params.dist_singleton if params is not None else 2
+    doub_pts = params.dist_doubleton if params is not None else 1
     pts = 0
     for suit in (Suit.S, Suit.H, Suit.D, Suit.C):
         n = suit_length(hand, suit)
         if n == 0:
-            pts += 3
+            pts += void_pts
         elif n == 1:
-            pts += 2
+            pts += sing_pts
         elif n == 2:
-            pts += 1
+            pts += doub_pts
     return pts
 
 
-def support_points(hand: List[Card], fit_suit: Suit) -> int:
+def support_points(hand: List[Card], fit_suit: Suit, params=None) -> int:
     """Revalued shortness when an 8+ card fit is confirmed.
 
     void=5, singleton=3, doubleton=1.  Only counts shortness
     outside the agreed fit suit.
     """
+    void_pts = params.support_void if params is not None else 5
+    sing_pts = params.support_singleton if params is not None else 3
+    doub_pts = params.support_doubleton if params is not None else 1
     pts = 0
     for suit in (Suit.S, Suit.H, Suit.D, Suit.C):
         if suit == fit_suit:
             continue
         n = suit_length(hand, suit)
         if n == 0:
-            pts += 5
+            pts += void_pts
         elif n == 1:
-            pts += 3
+            pts += sing_pts
         elif n == 2:
-            pts += 1
+            pts += doub_pts
     return pts
 
 
-def total_points(hand: List[Card], fit_suit: Optional[Suit] = None) -> int:
+def total_points(hand: List[Card], fit_suit: Optional[Suit] = None, params=None) -> int:
     """HCP plus distribution or support points.
 
     Uses support_points when *fit_suit* is provided, otherwise
@@ -137,8 +143,8 @@ def total_points(hand: List[Card], fit_suit: Optional[Suit] = None) -> int:
     """
     h = hcp(hand)
     if fit_suit is not None:
-        return h + support_points(hand, fit_suit)
-    return h + distribution_points(hand)
+        return h + support_points(hand, fit_suit, params=params)
+    return h + distribution_points(hand, params=params)
 
 
 def losing_trick_count(hand: List[Card]) -> int:
