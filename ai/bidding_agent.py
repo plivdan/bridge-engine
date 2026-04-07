@@ -564,6 +564,20 @@ class StateMachineBidder:
         combined_min = h + est.min_hcp
         combined_max = h + est.max_hcp
 
+        # If game is already reached, don't bid further unless slam values
+        current_contract = obs.get('contract')
+        if current_contract and not current_contract.special:
+            clv = current_contract.level
+            game_reached = (
+                (clv >= 3 and current_contract.strain == Suit.NT) or
+                (clv >= 4 and current_contract.strain in (Suit.H, Suit.S)) or
+                (clv >= 5 and current_contract.strain in (Suit.C, Suit.D))
+            )
+            tp_est = total_points(hand, fit) + est.min_hcp + int(
+                (est.max_hcp - est.min_hcp) * self.params.partner_est_fraction)
+            if game_reached and tp_est < self.params.slam_small_min:
+                return PASS
+
         # If we have a fit, raise to the appropriate level
         if fit:
             tp = total_points(hand, fit)
