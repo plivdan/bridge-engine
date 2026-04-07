@@ -254,6 +254,9 @@ class AuctionState:
             self.contract = call
             strain = call.strain
             side = self.current_player % 2
+            # Reset declarer before searching — previous contract's
+            # declarer must not carry over
+            self.declarer = None
             for i, c in enumerate(self.calls[:-1]):
                 if not c.special and c.strain == strain and (self.dealer + i) % 4 % 2 == side:
                     self.declarer = (self.dealer + i) % 4
