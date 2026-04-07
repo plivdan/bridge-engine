@@ -1,6 +1,8 @@
 # Bridge Engine
 
-A complete duplicate contract bridge engine in Python with AI agents, designed for both human-readable simulation and ML/RL research. Covers dealing, auction (bidding), card play with follow-suit enforcement, duplicate scoring, and data-driven parameter optimization.
+A duplicate contract bridge engine in Python with state-machine AI agents, double-dummy analysis, and data-driven parameter optimization. Covers the full lifecycle: dealing, auction, card play, and duplicate scoring.
+
+**SmartPlayer scores +93/board vs RuleBasedPlayer** over 500-board matches with optimized parameters.
 
 ## Project Structure
 
@@ -8,33 +10,38 @@ A complete duplicate contract bridge engine in Python with AI agents, designed f
 bridge/
 ├── engine/              Core bridge engine
 │   ├── card.py          Suit, Rank, Card, DECK, deal()
-│   ├── auction.py       Bid, AuctionState (bidding logic, declarer assignment)
+│   ├── auction.py       Bid, AuctionState (bidding, declarer assignment)
 │   ├── play.py          Trick, PlayState (card play, follow-suit, dummy control)
 │   ├── scoring.py       score(), score_rubber() (duplicate & rubber scoring)
 │   ├── state.py         GameState (DEAL -> AUCTION -> PLAY -> COMPLETE)
-│   ├── game.py          Game (multi-board sessions), SelfPlayEnv (RL interface)
-│   └── player.py        Player ABC, RandomPlayer, RuleBasedPlayer, etc.
+│   ├── game.py          Game, SelfPlayEnv (RL interface)
+│   ├── player.py        Player ABC, RandomPlayer, RuleBasedPlayer
+│   └── dds.py           Double-dummy solver (alpha-beta minimax)
 │
 ├── ai/                  AI agents and evaluation
 │   ├── hand_eval.py     HCP, shape, distribution/support points, LTC, quick tricks
-│   ├── bidding_agent.py State-machine bidder (Standard American system)
-│   ├── cardplay_agent.py Card play agent with tracking, finesses, Monte Carlo
+│   ├── bidding_agent.py State-machine bidder (Standard American)
+│   ├── cardplay_agent.py Card play with tracking, finesses, overruff prevention
 │   ├── smart_player.py  SmartPlayer — drop-in Player combining both agents
-│   └── bridge_params.py BridgeParams dataclass (49 tunable parameters + JSON I/O)
+│   ├── bridge_params.py BridgeParams dataclass (50+ tunable parameters)
+│   └── trace.py         Decision tracing for debugging AI choices
 │
-├── empirical/           Data-driven optimization
-│   ├── bridge_stats.py  Mass simulation -> BoardRecord (50K boards)
+├── empirical/           Data-driven optimization and measurement
+│   ├── bridge_stats.py  Mass simulation -> BoardRecord
 │   ├── bridge_tables.py EV tables, make rates, Bayesian partner distributions
-│   └── bridge_optimize.py Coordinate descent parameter optimizer
+│   ├── bridge_optimize.py Coordinate descent parameter optimizer
+│   ├── dd_benchmark.py  Benchmark AI vs double-dummy optimal
+│   └── report.py        Performance comparison reports
 │
-├── tests/               Test suites (544 tests total)
-│   ├── test_bridge.py   Engine tests (446): cards, auction, play, scoring, invariants
-│   ├── test_bidding.py  Bidding agent tests (23): openings, responses, auctions
-│   ├── test_cardplay.py Card play tests (14): leads, defense, tracking
-│   ├── test_integration.py Head-to-head benchmarks (12): crash resistance, scoring
-│   └── test_empirical.py Empirical framework tests (49): params, data, tables, MC
+├── tests/               Test suites (577 tests)
+│   ├── test_bridge.py   Engine (446): cards, auction, play, scoring, invariants
+│   ├── test_bidding.py  Bidding (24): openings, responses, auctions, hand eval
+│   ├── test_cardplay.py Card play (26): leads, defense, tracking, plan, ruffs
+│   ├── test_integration.py Benchmarks (12): head-to-head, crash resistance
+│   ├── test_empirical.py Empirical (49): params, data collection, tables, MC
+│   └── test_dds.py      DD solver (19): known positions, performance
 │
-├── config/              Configuration
+├── config/
 │   └── params_optimized.json  Optimized parameters from coordinate descent
 │
 └── main.py              Demo entry point
@@ -42,99 +49,112 @@ bridge/
 
 ## Quickstart
 
-### Run the demo
 ```bash
+# Run the demo
 python main.py
-```
 
-### Run all tests
-```bash
-python tests/test_bridge.py
-python tests/test_bidding.py
-python tests/test_cardplay.py
-python tests/test_integration.py
-python tests/test_empirical.py
-```
+# Run all tests
+python tests/test_bridge.py && python tests/test_bidding.py && \
+python tests/test_cardplay.py && python tests/test_integration.py && \
+python tests/test_empirical.py && python tests/test_dds.py
 
-### Play games with the AI
-```python
+# Play SmartPlayer vs RuleBasedPlayer
+python -c "
 from ai.smart_player import SmartPlayer
 from engine.player import RuleBasedPlayer
 from engine.game import Game
+results = Game([SmartPlayer(0), RuleBasedPlayer(1),
+                SmartPlayer(2), RuleBasedPlayer(3)], num_boards=100).run()
+ns = sum(r['score_ns'] for r in results)
+ew = sum(r['score_ew'] for r in results)
+print(f'NS: {ns}  EW: {ew}  Net: {ns-ew:+d}')
+"
 
-# SmartPlayer (NS) vs RuleBasedPlayer (EW)
-players = [
-    SmartPlayer(0), RuleBasedPlayer(1),
-    SmartPlayer(2), RuleBasedPlayer(3),
-]
-results = Game(players, num_boards=100).run()
+# Run performance report
+python -m empirical.report
+
+# Optimize parameters (~5 minutes)
+python -m empirical.bridge_optimize
+
+# Run DD benchmark
+python -m empirical.dd_benchmark
 ```
 
-### Use optimized parameters
+## AI System
+
+### SmartPlayer
+
+Drop-in `Player` subclass combining a state-machine bidder with a card-counting play agent.
+
+**Bidding** (Standard American Yellow Card):
+- Openings: 1NT (16-17), 2NT (20-21), 2C (22+), 1-suit (13+)
+- Responses calibrated by partner estimation with vulnerability awareness
+- Opener/responder rebids with fit detection and support point revaluation
+- Overcalls, competitive doubles, Blackwood slam investigation
+- Won't overbid game unless slam values exist
+
+**Card Play:**
+- Opening leads: partner's suit, honor sequences, 4th best (NT), singleton (suit)
+- Declarer: dynamic plan (recomputed each trick), positional finesse detection, ruff setup with overruff prevention, smart trump management
+- Defense: 3rd hand high, 2nd hand low, cover honor, ruff when void
+- CardTracker: played cards, void inference, honor placement, suit split estimation
+- Optional Monte Carlo trick estimation
+
+**Tunable Parameters** (`BridgeParams`):
+- 50+ parameters covering bidding thresholds, hand evaluation weights, card play tactics
+- JSON serialization for persistence
+- Coordinate descent optimizer finds optimal values in ~5 minutes
+- Vulnerability-aware adjustments (game threshold shifts by vul status)
+
+### Decision Tracing
+
+Enable `trace_enabled=True` in BridgeParams to see every decision:
+
 ```python
 from ai.bridge_params import BridgeParams
 from ai.smart_player import SmartPlayer
 
-params = BridgeParams.from_json('config/params_optimized.json')
+params = BridgeParams(trace_enabled=True)
 player = SmartPlayer(0, params=params)
+# After playing, inspect player.trace_log.summary()
 ```
 
-### Optimize parameters yourself
-```bash
-python -m empirical.bridge_optimize
+### Double-Dummy Solver
+
+Alpha-beta minimax solver with bit-packed hands, transposition table, and equivalent card canonicalization:
+
+```python
+from engine.dds import double_dummy_tricks
+from engine.card import deal, Suit
+
+hands = deal()
+tricks = double_dummy_tricks(hands, Suit.S, declarer=0)
+print(f"North can take {tricks} tricks with spades as trump")
 ```
+
+Exact solve for positions with 8 or fewer cards per hand. Quick-tricks heuristic for full 13-card hands.
 
 ## Engine Overview
 
-### Core Primitives (`engine/`)
+**card.py** — `Suit` (C/D/H/S/NT) and `Rank` (TWO-ACE) as IntEnums. `Card` is a frozen dataclass with `.hcp()`. `deal()` returns four sorted hands of 13.
 
-**card.py** — `Suit` (C/D/H/S/NT) and `Rank` (TWO-ACE) as IntEnums. `Card` is a frozen, ordered dataclass with `.hcp()` returning Milton Work points (A=4, K=3, Q=2, J=1). `deal()` shuffles and returns four hands of 13.
+**auction.py** — `AuctionState` tracks calls, validates legality, assigns declarer as the first player on the winning side to bid the contract strain.
 
-**auction.py** — `Bid(level, strain, special)` with natural ordering. `AuctionState` tracks calls, validates legality, and assigns the declarer as the first player on the winning side to bid the contract strain.
-
-**play.py** — `Trick` collects four cards and determines the winner. `PlayState` manages 13 tricks with follow-suit enforcement. Key design: `current_seat` is the physical position; `current_player` is the actor (declarer controls dummy).
+**play.py** — `PlayState` manages 13 tricks with follow-suit enforcement. `current_seat` is the physical position; `current_player` is the actor (declarer controls dummy).
 
 **scoring.py** — Full duplicate scoring: game/slam bonuses, doubled undertrick schedules, vulnerability.
 
-**state.py** — `GameState` orchestrates DEAL -> AUCTION -> PLAY -> COMPLETE. `observation(player)` returns an ML-ready dict.
+**state.py** — `GameState` orchestrates DEAL -> AUCTION -> PLAY -> COMPLETE. `observation(player)` returns an ML-ready dict with current (not dealt) hands during play.
 
-**game.py** — `Game(players, num_boards)` runs batches with the 16-board vulnerability cycle. `SelfPlayEnv` provides a gym-style `reset()`/`step()` RL interface.
-
-**player.py** — Abstract `Player` base with four implementations: `RandomPlayer`, `PassingPlayer`, `SimpleHeuristicPlayer`, `RuleBasedPlayer`.
-
-### AI Agents (`ai/`)
-
-**SmartPlayer** combines a state-machine bidder (Standard American Yellow Card) with a card-counting play agent. It supports:
-- Full bidding system: openings (1NT 15-17, 2NT 20-21, 2C 22+, 1-suit 12-21), responses, rebids, overcalls, competitive doubles, Blackwood slam investigation
-- Card play: opening leads (sequences, 4th best), declarer planning (finesses, ruffs), defense (3rd hand high, cover honor)
-- Card tracking: played cards, void inference, high card mastery
-- Optional Monte Carlo trick estimation
-
-**BridgeParams** — 49 tunable parameters covering every bidding threshold, hand evaluation weight, and card play tactic. Defaults reproduce traditional bridge wisdom. JSON serialization for persistence.
-
-### Empirical Optimization (`empirical/`)
-
-**Data collection** — `collect_boards()` runs mass simulations, recording 30+ features per board (HCP, shape, fit length, contract, tricks, score).
-
-**EV tables** — Empirical game/slam expected value by HCP bin and vulnerability. Replaces hardcoded "bid game at 26" with data-driven thresholds.
-
-**Coordinate descent** — Optimizes parameters by playing thousands of boards per configuration. Key findings from optimization:
-- Slams disabled (6.9% success rate is unprofitable)
-- Opening threshold raised to 13 HCP
-- Response threshold raised to 8 HCP
-- 1NT range widened to 14-18
+**game.py** — `Game(players, num_boards)` with 16-board vulnerability cycle. `SelfPlayEnv` for RL training loops.
 
 ## ML / RL Interface
-
-### SelfPlayEnv
 
 ```python
 from engine.game import SelfPlayEnv
 from engine.player import RuleBasedPlayer
 
-players = [RuleBasedPlayer(i) for i in range(4)]
-env = SelfPlayEnv(players)
-
+env = SelfPlayEnv([RuleBasedPlayer(i) for i in range(4)])
 for episode in range(1000):
     obs = env.reset()
     done = False
@@ -143,13 +163,13 @@ for episode in range(1000):
     score_ns, score_ew = reward
 ```
 
-### Observation dict
+### Observation keys
 
-**During auction**: `board_num`, `vulnerable`, `dealer`, `phase`, `player`, `hand`, `calls`, `current_bidder`, `valid_calls`, `contract`, `declarer`
+**Auction**: `board_num`, `vulnerable`, `dealer`, `phase`, `player`, `hand`, `calls`, `current_bidder`, `valid_calls`, `contract`, `declarer`
 
-**During play** (adds): `dummy_hand`, `tricks_ns`, `tricks_ew`, `completed_tricks`, `current_trick`, `trump`, `current_player`, `current_seat`, `valid_cards`
+**Play** (adds): `dummy_hand`, `tricks_ns`, `tricks_ew`, `completed_tricks`, `current_trick`, `trump`, `current_player`, `current_seat`, `valid_cards`
 
-### Implement a custom player
+### Custom player
 
 ```python
 from engine.player import Player
@@ -157,18 +177,19 @@ from engine.auction import PASS
 
 class MyPlayer(Player):
     def bid(self, obs):
-        return PASS  # your bidding logic
+        return PASS
 
     def play_card(self, obs):
-        return obs['valid_cards'][0]  # your play logic
+        return obs['valid_cards'][0]
 ```
 
 ## Key Invariants
 
-- **Declarer controls dummy**: `current_player` returns the declarer when `current_seat` is dummy
+- **Declarer controls dummy**: `current_player` returns declarer when `current_seat` is dummy
 - **Scoring sign**: positive = declarer's side scores
 - **Vulnerability**: standard 16-board duplicate cycle
-- **13 tricks**: every completed board has exactly 13 tricks, all hands empty
+- **13 tricks**: every completed board uses all 52 cards
+- **Observation hands**: during play, `hand` and `dummy_hand` reflect current remaining cards
 
 ## Scoring Reference
 
