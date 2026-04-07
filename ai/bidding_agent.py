@@ -24,6 +24,7 @@ from .hand_eval import (
     biddable_suit, quick_tricks, HandShape,
 )
 from .bridge_params import BridgeParams
+from .trace import DecisionTrace
 
 
 class BidPhase(Enum):
@@ -57,6 +58,7 @@ class StateMachineBidder:
     def __init__(self, seat: int, params=None):
         self.seat = seat
         self.params = params or BridgeParams()
+        self.last_trace: Optional[DecisionTrace] = None
 
     # ------------------------------------------------------------------
     # helpers to parse the auction history
@@ -146,7 +148,8 @@ class StateMachineBidder:
                 return suit
         return None
 
-    def _target_level(self, combined: int, fit: Optional[Suit]) -> tuple:
+    def _target_level(self, combined: int, fit: Optional[Suit],
+                      hand: Optional[List[Card]] = None) -> tuple:
         """Map combined points to (level, strain) target."""
         if combined >= self.params.slam_grand_min:
             strain = fit if fit is not None else Suit.NT
@@ -154,12 +157,15 @@ class StateMachineBidder:
         if combined >= self.params.slam_small_min:
             strain = fit if fit is not None else Suit.NT
             return (6, strain)
-        if combined >= self.params.game_combined_min:
+        game_min = getattr(self, '_effective_game_min', self.params.game_combined_min)
+        if combined >= game_min:
             if fit in (Suit.H, Suit.S):
                 return (4, fit)
             if fit in (Suit.C, Suit.D):
-                # prefer 3NT if we have stoppers, otherwise 5m
-                return (3, Suit.NT)
+                # Prefer 3NT with stoppers, otherwise 5 of the minor
+                if hand and all_suits_stopped(hand):
+                    return (3, Suit.NT)
+                return (5, fit)
             return (3, Suit.NT)
         if combined >= self.params.inv_combined_min:
             return (2, Suit.NT)
@@ -306,7 +312,7 @@ class StateMachineBidder:
         shape = hand_shape(hand)
 
         # Sub-opening
-        if h < self.params.open_min_hcp and not rule_of_20(hand):
+        if h < self._effective_open_min and not rule_of_20(hand):
             return PASS
 
         # Strong 2C
@@ -547,7 +553,7 @@ class StateMachineBidder:
             partner_est = est.min_hcp + int((est.max_hcp - est.min_hcp) * self.params.partner_est_fraction)
             combined = tp + partner_est
             # Cap at game level — slam decisions go through slam phase
-            target_lv, target_st = self._target_level(min(combined, 32), fit)
+            target_lv, target_st = self._target_level(min(combined, 32), fit, hand)
             b = self._best_valid(target_lv, target_st, valid)
             if b:
                 return b
@@ -603,7 +609,7 @@ class StateMachineBidder:
         if h <= self.params.rebid_strong_max:
             if fit:
                 target_lv, target_st = self._target_level(
-                    total_points(hand, fit) + est.min_hcp, fit)
+                    total_points(hand, fit) + est.min_hcp, fit, hand)
                 b = self._best_valid(target_lv, target_st, valid)
                 if b:
                     return b
@@ -635,7 +641,7 @@ class StateMachineBidder:
         # --- Very strong (20+): bid game ---
         if fit:
             target_lv, target_st = self._target_level(
-                total_points(hand, fit) + est.min_hcp, fit)
+                total_points(hand, fit) + est.min_hcp, fit, hand)
             b = self._best_valid(target_lv, target_st, valid)
             if b:
                 return b
@@ -677,7 +683,7 @@ class StateMachineBidder:
             return PASS
 
         # Cap at game — slam goes through slam phase
-        target_lv, target_st = self._target_level(min(combined, 32), fit)
+        target_lv, target_st = self._target_level(min(combined, 32), fit, hand)
 
         # Try to bid the target
         b = self._best_valid(target_lv, target_st, valid)
@@ -761,7 +767,7 @@ class StateMachineBidder:
             est = self._estimate_partner(partner_bids, calls, dealer)
             partner_est = est.min_hcp + int((est.max_hcp - est.min_hcp) * self.params.partner_est_fraction)
             combined = tp + partner_est
-            target_lv, target_st = self._target_level(min(combined, 32), fit)
+            target_lv, target_st = self._target_level(min(combined, 32), fit, hand)
             b = self._best_valid(target_lv, target_st, valid)
             if b:
                 return b
@@ -812,19 +818,21 @@ class StateMachineBidder:
             last_partner = partner_calls_all[-1] if partner_calls_all else None
             if last_partner and last_partner.level == 5 and not last_partner.special:
                 # Count aces from response
-                aces = {Suit.C: 0, Suit.D: 1, Suit.H: 2, Suit.S: 3}.get(
+                partner_aces = {Suit.C: 0, Suit.D: 1, Suit.H: 2,
+                                Suit.S: 3, Suit.NT: 4}.get(
                     last_partner.strain, 0)
                 my_aces = sum(1 for c in hand if c.rank == Rank.ACE)
-                total_aces = aces + my_aces  # this double-counts but is approximate
+                total_aces = partner_aces + my_aces
 
                 strain = fit if fit else Suit.NT
-                if aces >= 2 or total_aces >= 3:
-                    # all aces accounted for → bid 6
-                    b = self._best_valid(6, strain, valid)
+                # Grand slam: need all 4 aces
+                if combined >= self.params.slam_grand_min and total_aces == 4:
+                    b = self._best_valid(7, strain, valid)
                     if b:
                         return b
-                if combined >= self.params.slam_grand_min and (aces >= 3 or total_aces >= 4):
-                    b = self._best_valid(7, strain, valid)
+                # Small slam: need at least 3 aces
+                if total_aces >= 3:
+                    b = self._best_valid(6, strain, valid)
                     if b:
                         return b
                 # missing aces → sign off at 5
@@ -835,7 +843,7 @@ class StateMachineBidder:
         # If partner asked Blackwood, respond with ace count
         if partner_asked_blackwood:
             my_aces = sum(1 for c in hand if c.rank == Rank.ACE)
-            responses = {0: Suit.C, 1: Suit.D, 2: Suit.H, 3: Suit.S, 4: Suit.C}
+            responses = {0: Suit.C, 1: Suit.D, 2: Suit.H, 3: Suit.S, 4: Suit.NT}
             resp_strain = responses[my_aces]
             b = self._best_valid(5, resp_strain, valid)
             if b:
@@ -856,7 +864,7 @@ class StateMachineBidder:
                 return b
 
         # Fallback: bid game (not slam)
-        target_lv, target_st = self._target_level(min(combined, 32), fit)
+        target_lv, target_st = self._target_level(min(combined, 32), fit, hand)
         b = self._best_valid(target_lv, target_st, valid)
         return b if b else PASS
 
@@ -881,6 +889,21 @@ class StateMachineBidder:
         self._current_obs_calls = obs.get('calls', [])
         self._current_dealer = obs.get('dealer', 0)
 
+        # Apply vulnerability adjustments
+        vul_info = obs.get('vulnerable', {})
+        my_side = 'NS' if self.seat % 2 == 0 else 'EW'
+        my_vul = vul_info.get(my_side, False)
+        self._effective_open_min = self.params.open_min_hcp
+        self._effective_game_min = self.params.game_combined_min
+        if not my_vul:
+            # Not vulnerable: open lighter, games cheaper to bid
+            self._effective_open_min -= self.params.vul_open_adjust
+            self._effective_game_min -= self.params.vul_game_adjust
+        else:
+            # Vulnerable: tighter — penalties hurt more
+            self._effective_open_min += self.params.vul_open_adjust
+            self._effective_game_min += self.params.vul_game_adjust
+
         phase = self._determine_phase(obs)
 
         if phase == BidPhase.OPENING:
@@ -901,6 +924,32 @@ class StateMachineBidder:
             result = PASS
 
         # Safety: ensure result is valid
-        if result in valid:
-            return result
-        return PASS if PASS in valid else valid[0]
+        if result not in valid:
+            result = PASS if PASS in valid else valid[0]
+
+        # Emit trace if enabled
+        if self.params.trace_enabled:
+            hand = obs.get('hand', [])
+            calls = obs.get('calls', [])
+            dealer = obs.get('dealer', 0)
+            h = hcp(hand)
+            p_bids = self._partner_bids(calls, dealer)
+            est = self._estimate_partner(p_bids, calls, dealer)
+            partner_hcp = est.min_hcp + (est.max_hcp - est.min_hcp) * self.params.partner_est_fraction
+            m_bids = self._my_bids(calls, dealer)
+            fit = self._detected_fit(m_bids, p_bids, hand)
+            self.last_trace = DecisionTrace(
+                action_type='bid',
+                seat=self.seat,
+                phase=phase.name,
+                chosen=str(result),
+                reason=phase.name.lower(),
+                details={
+                    'hcp': h,
+                    'partner_est': round(partner_hcp, 1),
+                    'combined': round(h + partner_hcp, 1),
+                    'fit': str(fit) if fit else None,
+                },
+            )
+
+        return result

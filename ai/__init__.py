@@ -9,3 +9,4 @@ from .hand_eval import (
 from .bidding_agent import StateMachineBidder
 from .cardplay_agent import StateMachineCardPlayer, CardTracker
 from .smart_player import SmartPlayer
+from .trace import DecisionTrace, TraceLog

@@ -20,6 +20,7 @@ from enum import Enum, auto
 from engine.card import Card, Suit, Rank, DECK
 from engine.play import Trick
 from .bridge_params import BridgeParams
+from .trace import DecisionTrace
 
 
 class PlayPhase(Enum):
@@ -95,11 +96,11 @@ class CardTracker:
 
 @dataclass
 class DeclarerPlan:
-    """High-level plan for declarer play, computed once per hand."""
+    """High-level plan for declarer play, recomputed each trick."""
     winners: int = 0
     target: int = 0
     shortfall: int = 0
-    finesse_suits: List[Suit] = field(default_factory=list)
+    finesse_suits: List[Tuple[Suit, str]] = field(default_factory=list)  # (suit, 'declarer'|'dummy')
     promotion_suits: List[Suit] = field(default_factory=list)
     ruff_potential: int = 0
 
@@ -121,6 +122,7 @@ class StateMachineCardPlayer:
         self.tracker = None
         self.plan = None
         self._last_trick_count = -1
+        self.last_trace: Optional[DecisionTrace] = None
 
     # ------------------------------------------------------------------
     # tracker management
@@ -179,12 +181,38 @@ class StateMachineCardPlayer:
             dum_cards = [c for c in dummy if c.suit == suit]
             combined = my_cards + dum_cards
 
-            # Finesse: we hold K (or Q) but not A (or K), and can lead toward it
-            ranks_held = {c.rank for c in combined}
-            if Rank.KING in ranks_held and Rank.ACE not in ranks_held:
-                finesses.append(suit)
-            elif Rank.QUEEN in ranks_held and Rank.KING not in ranks_held:
-                finesses.append(suit)
+            # Finesse detection with positional awareness
+            my_ranks = {c.rank for c in my_cards}
+            dum_ranks = {c.rank for c in dum_cards}
+            all_ranks = my_ranks | dum_ranks
+
+            # AQ tenace: finesse K — lead from opposite hand toward AQ
+            if Rank.ACE in all_ranks and Rank.QUEEN in all_ranks and Rank.KING not in all_ranks:
+                if Rank.QUEEN in my_ranks:
+                    finesses.append((suit, 'declarer'))  # Q in my hand, lead from dummy
+                elif Rank.QUEEN in dum_ranks:
+                    finesses.append((suit, 'dummy'))     # Q in dummy, lead from declarer
+
+            # KJ tenace: finesse Q — lead toward KJ
+            elif Rank.KING in all_ranks and Rank.JACK in all_ranks and Rank.QUEEN not in all_ranks:
+                if Rank.KING in my_ranks:
+                    finesses.append((suit, 'declarer'))
+                elif Rank.KING in dum_ranks:
+                    finesses.append((suit, 'dummy'))
+
+            # K without A: finesse A — lead toward K
+            elif Rank.KING in all_ranks and Rank.ACE not in all_ranks:
+                if Rank.KING in my_ranks:
+                    finesses.append((suit, 'declarer'))
+                elif Rank.KING in dum_ranks:
+                    finesses.append((suit, 'dummy'))
+
+            # Q without K: finesse K — lead toward Q
+            elif Rank.QUEEN in all_ranks and Rank.KING not in all_ranks:
+                if Rank.QUEEN in my_ranks:
+                    finesses.append((suit, 'declarer'))
+                elif Rank.QUEEN in dum_ranks:
+                    finesses.append((suit, 'dummy'))
 
             # Promotion: long suit with top cards, need to drive out stoppers
             if len(combined) >= 5:
@@ -200,8 +228,9 @@ class StateMachineCardPlayer:
                     continue
                 dum_len = sum(1 for c in dummy if c.suit == suit)
                 dum_trumps = sum(1 for c in dummy if c.suit == trump_suit)
-                if dum_len <= 1 and dum_trumps > 0:
-                    ruffs += min(dum_trumps, 2 - dum_len)
+                max_ruff = self.params.max_ruff_potential
+                if dum_len < max_ruff and dum_trumps > 0:
+                    ruffs += min(dum_trumps, max(0, max_ruff - dum_len))
 
         return DeclarerPlan(
             winners=winners, target=target, shortfall=shortfall,
@@ -220,7 +249,7 @@ class StateMachineCardPlayer:
                          key=lambda c: c.rank, reverse=True)
             # Count from the top: A, K, Q... are winners if we hold them
             combined = sorted(my + dum, key=lambda c: c.rank, reverse=True)
-            playable = min(max(len(my), len(dum)), len(combined))
+            playable = max(len(my), len(dum))
             rank_order = [Rank.ACE, Rank.KING, Rank.QUEEN, Rank.JACK, Rank.TEN]
             for i, r in enumerate(rank_order):
                 if i >= playable:
@@ -391,9 +420,8 @@ class StateMachineCardPlayer:
         active_hand = dummy if playing_from_dummy else hand
         other_hand = hand if playing_from_dummy else dummy
 
-        # Build plan if we don't have one
-        if self.plan is None:
-            self.plan = self._make_plan(obs)
+        # Recompute plan each trick to reflect current card distribution
+        self.plan = self._make_plan(obs)
 
         # If we need ruffs and have shortness in dummy, lead to create ruffs
         if (trump_suit and self.plan.ruff_potential > 0
@@ -408,14 +436,15 @@ class StateMachineCardPlayer:
                     if suit_cards:
                         return min(suit_cards, key=lambda c: c.rank)
 
-        # Finesse: lead toward honor in the other hand
+        # Finesse: lead from opposite hand toward the tenace
         if self.plan.finesse_suits:
-            for fsuit in self.plan.finesse_suits:
-                other_has_honor = any(
-                    c.suit == fsuit and c.rank in (Rank.KING, Rank.QUEEN)
-                    for c in other_hand)
-                if other_has_honor:
-                    # Lead low in that suit from current hand
+            for fsuit, honor_hand in self.plan.finesse_suits:
+                # Only lead toward the honor if we're in the opposite hand
+                should_lead = (
+                    (honor_hand == 'dummy' and not playing_from_dummy) or
+                    (honor_hand == 'declarer' and playing_from_dummy)
+                )
+                if should_lead:
                     low_cards = sorted([c for c in valid if c.suit == fsuit],
                                        key=lambda c: c.rank)
                     if low_cards and low_cards[0].rank < Rank.QUEEN:
@@ -427,12 +456,28 @@ class StateMachineCardPlayer:
                 if c.suit != trump_suit and self.tracker.is_established(c, hand, dummy):
                     return c
 
-        # Draw trumps if we have trump control
+        # Draw trumps if appropriate
         if trump_suit:
             trump_cards = sorted([c for c in valid if c.suit == trump_suit],
                                  key=lambda c: c.rank, reverse=True)
             if trump_cards and trump_cards[0].rank >= self.params.trump_draw_min:
-                return trump_cards[0]
+                should_draw = True
+                if self.params.trump_management_mode == 'smart':
+                    # Don't draw if we still need dummy's trumps for ruffs
+                    if self.plan.ruff_potential > 0 and playing_from_dummy:
+                        should_draw = False
+                    # Don't draw if opponents are already out of trump
+                    if self.tracker:
+                        opp_trumps = len(self.tracker.cards_outstanding(trump_suit))
+                        # Subtract our own unplayed trumps from outstanding
+                        our_trumps = sum(1 for c in hand + dummy if c.suit == trump_suit)
+                        opp_trumps = max(0, opp_trumps - our_trumps)
+                        if opp_trumps == 0:
+                            should_draw = False
+                elif self.params.trump_management_mode == 'never':
+                    should_draw = False
+                if should_draw:
+                    return trump_cards[0]
 
         # Lead highest card
         return max(valid, key=lambda c: (c.rank, c.suit))
@@ -910,11 +955,35 @@ class StateMachineCardPlayer:
 
         if on_lead:
             if not is_declarer_side and len(completed) == 0:
-                return self._opening_lead(obs)
-            if is_declarer_side:
-                return self._declarer_lead(obs)
-            return self._defender_lead(obs)
+                result = self._opening_lead(obs)
+                phase_name = 'OPENING_LEAD'
+            elif is_declarer_side:
+                result = self._declarer_lead(obs)
+                phase_name = 'DECLARER_LEAD'
+            else:
+                result = self._defender_lead(obs)
+                phase_name = 'DEFENDER_LEAD'
+        elif is_declarer_side:
+            result = self._declarer_follow(obs)
+            phase_name = 'DECLARER_FOLLOW'
+        else:
+            result = self._defender_follow(obs)
+            phase_name = 'DEFENDER_FOLLOW'
 
-        if is_declarer_side:
-            return self._declarer_follow(obs)
-        return self._defender_follow(obs)
+        # Emit trace if enabled
+        if self.params.trace_enabled:
+            self.last_trace = DecisionTrace(
+                action_type='play',
+                seat=self.seat,
+                phase=phase_name,
+                chosen=str(result),
+                reason=phase_name.lower(),
+                candidates=[str(c) for c in valid],
+                details={
+                    'trick_num': len(completed) + 1,
+                    'is_declarer_side': is_declarer_side,
+                    'on_lead': on_lead,
+                },
+            )
+
+        return result

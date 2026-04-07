@@ -12,6 +12,7 @@ from engine.auction import Bid
 from .bidding_agent import StateMachineBidder
 from .cardplay_agent import StateMachineCardPlayer
 from .bridge_params import BridgeParams
+from .trace import TraceLog
 
 
 class SmartPlayer(Player):
@@ -26,9 +27,16 @@ class SmartPlayer(Player):
         self.params = params or BridgeParams()
         self.bidder = StateMachineBidder(seat, params=self.params)
         self.card_player = StateMachineCardPlayer(seat, params=self.params)
+        self.trace_log = TraceLog() if self.params.trace_enabled else None
 
     def bid(self, obs) -> Bid:
-        return self.bidder.bid(obs)
+        result = self.bidder.bid(obs)
+        if self.trace_log and self.bidder.last_trace:
+            self.trace_log.add(self.bidder.last_trace)
+        return result
 
     def play_card(self, obs) -> Card:
-        return self.card_player.play_card(obs)
+        result = self.card_player.play_card(obs)
+        if self.trace_log and self.card_player.last_trace:
+            self.trace_log.add(self.card_player.last_trace)
+        return result

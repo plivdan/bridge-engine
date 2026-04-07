@@ -90,6 +90,17 @@ class BridgeParams:
     fit_min_support_major: int = 3
     fit_min_support_general: int = 4
 
+    # ── Trump management ──────────────────────────────────────────
+    trump_management_mode: str = 'always'  # 'always', 'smart', 'never'
+    max_ruff_potential: int = 3
+
+    # ── Vulnerability adjustments ─────────────────────────────────
+    vul_open_adjust: int = 0    # lower open threshold by N when NV
+    vul_game_adjust: int = 0    # lower game threshold by N when NV
+
+    # ── Decision tracing ──────────────────────────────────────────
+    trace_enabled: bool = False
+
     def to_json(self, path: str):
         """Save parameters to a JSON file."""
         with open(path, 'w') as f:

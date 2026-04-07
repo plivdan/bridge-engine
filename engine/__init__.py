@@ -4,6 +4,7 @@ from .card import Card, Suit, Rank, DECK, SUIT_SYM, deal
 from .auction import Bid, AuctionState, PASS, DOUBLE, REDOUBLE, make_bid
 from .play import Trick, PlayState
 from .scoring import score, score_rubber
+from .dds import double_dummy_tricks, dd_all_strains
 from .state import GameState
 from .game import Game, SelfPlayEnv, VUL_SCHEDULE
 from .player import (
