@@ -12,6 +12,7 @@ Tactics implemented:
     - Fallback to RuleBasedPlayer-style logic for unhandled cases
 """
 
+import random
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Set, Tuple, Any
 from enum import Enum, auto
@@ -618,6 +619,265 @@ class StateMachineCardPlayer:
         return False
 
     # ------------------------------------------------------------------
+    # Monte Carlo trick estimation
+    # ------------------------------------------------------------------
+
+    def _monte_carlo_play(self, obs: dict) -> Optional[Card]:
+        """Sample random opponent hands and pick the card that wins most tricks.
+
+        Returns the best card, or None if MC is disabled or can't run.
+        """
+        if not self.params.use_monte_carlo:
+            return None
+
+        valid = obs['valid_cards']
+        if len(valid) <= 1:
+            return None
+
+        hand = obs['hand']
+        dummy_hand = obs.get('dummy_hand') or []
+        completed = obs.get('completed_tricks', [])
+        current_trick = obs.get('current_trick')
+        trump = obs.get('trump')
+        trump_suit = trump if trump != Suit.NT else None
+        declarer = obs.get('declarer', 0)
+        current_seat = obs.get('current_seat', self.seat)
+        is_declarer_side = (self.seat % 2 == declarer % 2)
+
+        # Determine known and unknown cards
+        known = set(hand) | set(dummy_hand)
+        played = set()
+        for t in completed:
+            played |= set(t.cards.values())
+        if current_trick:
+            played |= set(current_trick.cards.values())
+
+        unknown = [c for c in DECK if c not in known and c not in played]
+        if len(unknown) < 2:
+            return None  # too few unknowns to sample
+
+        # Identify the two opponent seats
+        opp_seats = [s for s in range(4) if s % 2 != self.seat % 2]
+
+        # Estimate remaining hand sizes per opponent
+        cards_per_seat = {}
+        total_cards_played_by = {s: 0 for s in range(4)}
+        for t in completed:
+            for s in t.cards:
+                total_cards_played_by[s] += 1
+        if current_trick:
+            for s in current_trick.cards:
+                total_cards_played_by[s] += 1
+
+        for s in range(4):
+            cards_per_seat[s] = 13 - total_cards_played_by[s]
+
+        opp_remaining = {s: cards_per_seat[s] for s in opp_seats}
+
+        # Score each candidate card
+        N = self.params.monte_carlo_samples
+        scores = {}
+
+        for card in valid:
+            total_tricks = 0
+            for _ in range(N):
+                tricks = self._simulate_one(
+                    card, unknown, opp_seats, opp_remaining,
+                    hand, dummy_hand, completed, current_trick,
+                    trump_suit, declarer, current_seat, is_declarer_side
+                )
+                total_tricks += tricks
+            scores[card] = total_tricks
+
+        return max(valid, key=lambda c: scores[c])
+
+    def _simulate_one(self, chosen_card, unknown, opp_seats, opp_remaining,
+                      hand, dummy_hand, completed, current_trick,
+                      trump_suit, declarer, current_seat, is_declarer_side):
+        """Simulate one random deal and count tricks for declarer side."""
+        # Assign unknown cards to opponents respecting voids
+        shuffled = list(unknown)
+        random.shuffle(shuffled)
+
+        opp_hands = {s: [] for s in opp_seats}
+        # Respect known voids
+        void_cards = {s: [] for s in opp_seats}
+        non_void = list(shuffled)
+
+        if self.tracker:
+            for s in opp_seats:
+                for c in shuffled:
+                    if c.suit in self.tracker.shown_void.get(s, set()):
+                        void_cards[s].append(c)
+
+        # Remove void-violating cards, assign rest proportionally
+        available = list(shuffled)
+        for s in opp_seats:
+            need = opp_remaining.get(s, 0)
+            assigned = 0
+            for c in available[:]:
+                if assigned >= need:
+                    break
+                # Skip if this opponent is void in this suit
+                if self.tracker and c.suit in self.tracker.shown_void.get(s, set()):
+                    continue
+                opp_hands[s].append(c)
+                available.remove(c)
+                assigned += 1
+
+        # Assign remaining cards to whoever still needs them
+        for s in opp_seats:
+            need = opp_remaining.get(s, 0) - len(opp_hands[s])
+            while need > 0 and available:
+                opp_hands[s].append(available.pop(0))
+                need -= 1
+
+        # Build full hand map
+        dummy_seat = (declarer + 2) % 4
+        all_hands = dict(opp_hands)
+        # Our side's hands: remove cards already played in current trick
+        my_remaining = [c for c in hand if c != chosen_card]
+        dum_remaining = list(dummy_hand)
+
+        # Figure out which seat we're playing from
+        if current_seat == dummy_seat:
+            dum_remaining = [c for c in dum_remaining if c != chosen_card]
+        else:
+            my_remaining = [c for c in my_remaining if c != chosen_card]
+
+        all_hands[self.seat] = my_remaining
+        partner_seat = (self.seat + 2) % 4
+        if partner_seat == dummy_seat:
+            all_hands[partner_seat] = dum_remaining
+        elif partner_seat == declarer:
+            all_hands[partner_seat] = dum_remaining if self.seat != declarer else my_remaining
+
+        # Actually, let's simplify: just assign known hands
+        all_hands[declarer] = [c for c in hand if c != chosen_card] if self.seat == declarer else list(hand)
+        all_hands[dummy_seat] = list(dummy_hand)
+        if current_seat == dummy_seat:
+            all_hands[dummy_seat] = [c for c in dummy_hand if c != chosen_card]
+        elif current_seat != dummy_seat and self.seat == declarer:
+            all_hands[declarer] = [c for c in hand if c != chosen_card]
+
+        # Simulate remaining tricks with greedy play
+        return self._greedy_playout(
+            chosen_card, current_trick, all_hands,
+            trump_suit, declarer, dummy_seat, current_seat
+        )
+
+    def _greedy_playout(self, first_card, current_trick, hands,
+                        trump_suit, declarer, dummy_seat, first_seat):
+        """Complete the current trick and play remaining tricks greedily.
+
+        Returns tricks won by declarer's side.
+        """
+        dec_tricks = 0
+
+        # Complete the current trick
+        if current_trick and current_trick.cards:
+            # Cards already played in this trick
+            trick_cards = dict(current_trick.cards)
+            trick_cards[first_seat] = first_card
+            leader = current_trick.leader
+            order = [(leader + i) % 4 for i in range(4)]
+            for seat in order:
+                if seat in trick_cards:
+                    continue
+                # Greedy: play highest winning card or lowest loser
+                h = hands.get(seat, [])
+                led = current_trick.led_suit()
+                following = [c for c in h if c.suit == led]
+                if not following:
+                    following = h
+                if not following:
+                    continue
+                # Play highest
+                pick = max(following, key=lambda c: c.rank)
+                trick_cards[seat] = pick
+                if seat in hands and pick in hands[seat]:
+                    hands[seat].remove(pick)
+
+            # Determine winner
+            winner = self._greedy_trick_winner(trick_cards, leader, trump_suit)
+            if winner % 2 == declarer % 2:
+                dec_tricks += 1
+            next_leader = winner
+        else:
+            # We're leading — the chosen card starts a new trick
+            if first_seat in hands and first_card in hands[first_seat]:
+                hands[first_seat].remove(first_card)
+            trick_cards = {first_seat: first_card}
+            leader = first_seat
+            order = [(leader + i) % 4 for i in range(4)]
+            for seat in order[1:]:
+                h = hands.get(seat, [])
+                if not h:
+                    continue
+                led = first_card.suit
+                following = [c for c in h if c.suit == led]
+                if not following:
+                    following = h
+                pick = max(following, key=lambda c: c.rank)
+                trick_cards[seat] = pick
+                hands[seat].remove(pick)
+
+            winner = self._greedy_trick_winner(trick_cards, leader, trump_suit)
+            if winner % 2 == declarer % 2:
+                dec_tricks += 1
+            next_leader = winner
+
+        # Play remaining tricks greedily
+        for _ in range(12):  # max remaining tricks
+            if not any(hands.get(s) for s in range(4)):
+                break
+            trick_cards = {}
+            order = [(next_leader + i) % 4 for i in range(4)]
+            led_suit = None
+            for seat in order:
+                h = hands.get(seat, [])
+                if not h:
+                    continue
+                if led_suit is None:
+                    # Leader picks highest card in best suit
+                    pick = max(h, key=lambda c: c.rank)
+                    led_suit = pick.suit
+                else:
+                    following = [c for c in h if c.suit == led_suit]
+                    if not following:
+                        following = h
+                    pick = max(following, key=lambda c: c.rank)
+                trick_cards[seat] = pick
+                hands[seat].remove(pick)
+
+            if len(trick_cards) < 2:
+                break
+            winner = self._greedy_trick_winner(trick_cards, next_leader, trump_suit)
+            if winner % 2 == declarer % 2:
+                dec_tricks += 1
+            next_leader = winner
+
+        return dec_tricks
+
+    def _greedy_trick_winner(self, cards: dict, leader: int,
+                             trump: Optional[Suit]) -> int:
+        """Determine trick winner from a dict of seat→Card."""
+        if not cards:
+            return leader
+        led_card = cards.get(leader)
+        if led_card is None:
+            return leader
+        led_suit = led_card.suit
+        best_p = leader
+        best_c = led_card
+        for p, c in cards.items():
+            if c.suit == best_c.suit and c.rank > best_c.rank:
+                best_c, best_p = c, p
+            elif trump and c.suit == trump and best_c.suit != trump:
+                best_c, best_p = c, p
+        return best_p
+
+    # ------------------------------------------------------------------
     # main entry point
     # ------------------------------------------------------------------
 
@@ -635,6 +895,11 @@ class StateMachineCardPlayer:
             return valid[0]
 
         self._sync_tracker(obs)
+
+        # Try Monte Carlo if enabled
+        mc_result = self._monte_carlo_play(obs)
+        if mc_result is not None and mc_result in valid:
+            return mc_result
 
         trick = obs.get('current_trick')
         declarer = obs.get('declarer')
