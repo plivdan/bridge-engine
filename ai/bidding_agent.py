@@ -573,6 +573,9 @@ class StateMachineBidder:
             # Cap at game level — slam decisions go through slam phase
             target_lv, target_st = self._target_level(min(combined, 32), fit, hand)
             b = self._best_valid(target_lv, target_st, valid)
+            if not b:
+                # Target level too low for current auction — raise to cheapest available
+                b = self._cheapest_in_suit(fit, valid)
             if b:
                 return b
 
@@ -699,6 +702,19 @@ class StateMachineBidder:
                 if b and b.level <= 3:
                     return b
             return PASS
+
+        # If game is already reached, don't bid further unless slam values
+        current_contract = obs.get('contract')
+        if current_contract and not current_contract.special:
+            contract_lv = current_contract.level
+            # Game is reached at 3NT, 4M, 5m
+            game_reached = (
+                (contract_lv >= 3 and current_contract.strain == Suit.NT) or
+                (contract_lv >= 4 and current_contract.strain in (Suit.H, Suit.S)) or
+                (contract_lv >= 5 and current_contract.strain in (Suit.C, Suit.D))
+            )
+            if game_reached and combined < self.params.slam_small_min:
+                return PASS
 
         # Cap at game — slam goes through slam phase
         target_lv, target_st = self._target_level(min(combined, 32), fit, hand)

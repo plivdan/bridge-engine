@@ -604,11 +604,30 @@ class StateMachineCardPlayer:
                 return min(winning, key=lambda c: c.rank)
             return min(following, key=lambda c: c.rank)
 
-        # Can't follow suit
+        # Can't follow suit — ruff or discard
         if trump_suit and not partner_winning:
-            trumps = [c for c in valid if c.suit == trump_suit]
+            trumps = sorted([c for c in valid if c.suit == trump_suit],
+                            key=lambda c: c.rank)
             if trumps:
-                return min(trumps, key=lambda c: c.rank)
+                # Ruff high enough to prevent overruff: use cheapest trump
+                # that beats any outstanding trump the opponents might play
+                # after us. For simplicity, if opponents could overruff,
+                # ruff with highest; otherwise ruff low.
+                if self.tracker:
+                    opp_trumps = self.tracker.cards_outstanding(trump_suit)
+                    # Filter to just opponent trumps (exclude our own)
+                    hand = obs.get('hand', [])
+                    dummy = obs.get('dummy_hand', [])
+                    our_trumps = {c for c in hand + dummy if c.suit == trump_suit}
+                    opp_trump_ranks = [c.rank for c in opp_trumps if c not in our_trumps]
+                    if opp_trump_ranks:
+                        max_opp = max(opp_trump_ranks)
+                        # Use cheapest trump that beats max opponent trump
+                        safe = [c for c in trumps if c.rank > max_opp]
+                        if safe:
+                            return safe[0]  # cheapest safe ruff
+                # Default: ruff with lowest
+                return trumps[0]
 
         # Discard lowest
         return min(valid, key=lambda c: (c.rank, c.suit))
@@ -698,9 +717,21 @@ class StateMachineCardPlayer:
 
         # Can't follow suit — consider ruffing
         if trump_suit and not partner_winning:
-            trumps = [c for c in valid if c.suit == trump_suit]
+            trumps = sorted([c for c in valid if c.suit == trump_suit],
+                            key=lambda c: c.rank)
             if trumps:
-                return min(trumps, key=lambda c: c.rank)
+                # Ruff high enough to prevent overruff
+                if self.tracker:
+                    opp_trumps = self.tracker.cards_outstanding(trump_suit)
+                    hand = obs.get('hand', [])
+                    our_trumps = {c for c in hand if c.suit == trump_suit}
+                    opp_trump_ranks = [c.rank for c in opp_trumps if c not in our_trumps]
+                    if opp_trump_ranks:
+                        max_opp = max(opp_trump_ranks)
+                        safe = [c for c in trumps if c.rank > max_opp]
+                        if safe:
+                            return safe[0]
+                return trumps[0]
 
         # Discard: throw lowest from weakest suit
         return min(valid, key=lambda c: (c.rank, c.suit))
