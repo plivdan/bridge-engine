@@ -314,15 +314,16 @@ class StateMachineCardPlayer:
 
         # Ruff potential: shortness in one hand + trumps in the other
         if trump_suit:
-            declarer = obs.get('declarer')
+            dum_trumps = sum(1 for c in dummy if c.suit == trump_suit)
             for suit in (Suit.S, Suit.H, Suit.D, Suit.C):
                 if suit == trump_suit:
                     continue
                 dum_len = sum(1 for c in dummy if c.suit == suit)
-                dum_trumps = sum(1 for c in dummy if c.suit == trump_suit)
                 max_ruff = self.params.max_ruff_potential
                 if dum_len < max_ruff and dum_trumps > 0:
                     ruffs += min(dum_trumps, max(0, max_ruff - dum_len))
+            # Can't ruff more times than dummy has trumps
+            ruffs = min(ruffs, dum_trumps)
 
         return DeclarerPlan(
             winners=winners, target=target, shortfall=shortfall,

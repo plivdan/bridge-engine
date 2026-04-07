@@ -59,13 +59,13 @@ print(f"  NS (Smart):     {total_ns}")
 print(f"  EW (RuleBased): {total_ew}")
 print(f"  Net advantage:  {net}")
 
-check(True, f"1000 boards completed (NS={total_ns} EW={total_ew} net={net})")
+check(net > 0, f"SmartPlayer NS beats RuleBasedPlayer EW: net={net:+d} (expect > 0)")
 
 # Count how often each side won
 ns_wins = sum(1 for r in results if r['score_ns'] > 0)
 ew_wins = sum(1 for r in results if r['score_ew'] > 0)
 draws = sum(1 for r in results if r['score_ns'] == 0 and r['score_ew'] == 0)
-check(True, f"Board outcomes: NS wins={ns_wins}, EW wins={ew_wins}, draws={draws}")
+check(ns_wins > ew_wins, f"NS wins more boards: {ns_wins} vs {ew_wins}")
 
 
 # ── SMART vs RANDOM ──────────────────────────────────────────────

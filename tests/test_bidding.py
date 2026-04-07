@@ -55,7 +55,7 @@ def bid_of(bidder, obs):
 
 # --- hands -----------------------------------------------------------------
 
-# 15 HCP balanced, all suits stopped → 1NT
+# 17 HCP balanced, all suits stopped → 1NT
 HAND_1NT = [
     Card(Rank.ACE, Suit.S), Card(Rank.KING, Suit.S), Card(Rank.FIVE, Suit.S),
     Card(Rank.QUEEN, Suit.H), Card(Rank.JACK, Suit.H), Card(Rank.FOUR, Suit.H),
@@ -89,7 +89,7 @@ HAND_2C = [
     Card(Rank.QUEEN, Suit.C), Card(Rank.JACK, Suit.C), Card(Rank.NINE, Suit.C),
 ]
 
-# 8 HCP, weak → pass
+# 6 HCP, weak → pass
 HAND_WEAK = [
     Card(Rank.KING, Suit.S), Card(Rank.SEVEN, Suit.S), Card(Rank.THREE, Suit.S),
     Card(Rank.QUEEN, Suit.H), Card(Rank.FIVE, Suit.H),
@@ -310,8 +310,10 @@ check(hcp(HAND_2NT) == 20, f"HAND_2NT HCP = {hcp(HAND_2NT)} (expect 20)")
 check(hcp(HAND_2C) == 22, f"HAND_2C HCP = {hcp(HAND_2C)} (expect 22)")
 check(hcp(HAND_WEAK) == 6, f"HAND_WEAK HCP = {hcp(HAND_WEAK)} (expect 6)")
 check(hand_shape(HAND_1NT).is_balanced, "HAND_1NT is balanced")
-check(not hand_shape(HAND_1H).is_balanced or hand_shape(HAND_1H).is_balanced,
-      "HAND_1H shape check runs")
+check(hand_shape(HAND_1H).is_balanced,
+      "HAND_1H 5-3-3-2 is balanced")
+check(hand_shape(HAND_1H).longest_suit == Suit.H,
+      "HAND_1H longest suit is hearts")
 
 
 # ── SUMMARY ──────────────────────────────────────────────────────

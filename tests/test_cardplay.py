@@ -381,7 +381,7 @@ hands_wc2[2] = [Card(Rank.JACK, Suit.S), Card(Rank.THREE, Suit.C),
 winners2 = cp_test._count_top_winners(
     hands_wc[0], hands_wc2[2], None
 )
-check(winners2 >= 3, f"AKQ opposite Jxx: {winners2} winners (expect 3+)")
+check(winners2 == 3, f"AKQ opposite Jxx: {winners2} winners (expect 3)")
 
 
 # ── RUFF POTENTIAL ───────────────────────────────────────────────
@@ -405,8 +405,8 @@ contract = make_bid(2, Suit.S)
 ps_ruff = make_ps(hands_ruff, trump=Suit.S, declarer=0, leader=1)
 obs_ruff = make_play_obs(ps_ruff, 0, contract=contract)
 plan = cp_test._make_plan(obs_ruff)
-check(plan.ruff_potential >= 3,
-      f"Void in dummy with 3 trumps: ruff_potential={plan.ruff_potential} (expect >= 3)")
+check(plan.ruff_potential == 3,
+      f"Void in dummy with 3 trumps: ruff_potential={plan.ruff_potential} (expect 3)")
 
 
 # ── POSITIONAL FINESSE ────────────────────────────────────────────
@@ -478,7 +478,7 @@ obs_tm2 = make_play_obs(ps_tm, 0, contract=make_bid(2, Suit.S))
 card_tm = cp_smart.play_card(obs_tm2)
 # With smart trump management and ruff potential, shouldn't lead trump
 is_trump = card_tm.suit == Suit.S
-check(True, f"Smart trump mode: led {card_tm} (trump={is_trump})")
+check(not is_trump, f"Smart trump mode: should NOT lead trump with ruff potential (led {card_tm})")
 
 
 # ── CRASH RESISTANCE WITH NEW FEATURES ────────────────────────────
