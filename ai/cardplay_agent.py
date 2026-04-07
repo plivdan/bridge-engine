@@ -32,6 +32,116 @@ class PlayPhase(Enum):
 
 
 # ---------------------------------------------------------------------------
+# Heuristic play for MC simulation — standalone, no Trick/obs dependency
+# ---------------------------------------------------------------------------
+
+def _current_best(trick_cards: dict, leader: int,
+                  trump: Optional[Suit]) -> Tuple[int, Card]:
+    """Return (seat, card) of the current trick winner."""
+    if not trick_cards:
+        return leader, None
+    # Find the actual first card played (the leader or first in dict)
+    if leader in trick_cards:
+        best_seat = leader
+        best_card = trick_cards[leader]
+    else:
+        best_seat = next(iter(trick_cards))
+        best_card = trick_cards[best_seat]
+    for seat, c in trick_cards.items():
+        if c.suit == best_card.suit and c.rank > best_card.rank:
+            best_seat, best_card = seat, c
+        elif trump and c.suit == trump and best_card.suit != trump:
+            best_seat, best_card = seat, c
+    return best_seat, best_card
+
+
+def _heuristic_follow(seat: int, hand: List[Card], led_suit: Suit,
+                      trick_cards: dict, leader: int,
+                      trump: Optional[Suit], declarer: int) -> Card:
+    """Heuristic card selection for following to a trick (MC simulation).
+
+    Implements: second-hand-low, third-hand-high, cover honor,
+    win cheaply, ruff when void, discard low.
+    """
+    is_decl_side = (seat % 2 == declarer % 2)
+    partner = (seat + 2) % 4
+    following = [c for c in hand if c.suit == led_suit]
+
+    if following:
+        # Determine current winner
+        winner_seat, winner_card = _current_best(trick_cards, leader, trump)
+        if winner_card is None:
+            return min(following, key=lambda c: c.rank)
+        partner_winning = (winner_seat == partner)
+        cards_played = len(trick_cards)
+
+        # Partner winning → play low
+        if partner_winning:
+            return min(following, key=lambda c: c.rank)
+
+        # Second hand (1 card played) → second-hand low, unless covering honor
+        if cards_played == 1:
+            led_card = trick_cards[leader]
+            if led_card.rank >= Rank.JACK:
+                covers = [c for c in following if c.rank > led_card.rank]
+                if covers:
+                    return min(covers, key=lambda c: c.rank)
+            return min(following, key=lambda c: c.rank)
+
+        # Third/fourth hand → win cheaply if possible
+        winners = [c for c in following if c.rank > winner_card.rank
+                   and (winner_card.suit == led_suit or
+                        (trump and winner_card.suit != trump))]
+        if winners:
+            return min(winners, key=lambda c: c.rank)
+
+        # Can't win → play low
+        return min(following, key=lambda c: c.rank)
+
+    # Can't follow suit — ruff or discard
+    if trump:
+        trumps = [c for c in hand if c.suit == trump]
+        if trumps:
+            winner_seat, winner_card = _current_best(trick_cards, leader, trump)
+            partner_winning = (winner_card is not None and winner_seat == partner)
+            if not partner_winning:
+                # Ruff — use lowest trump (in simulation we don't track
+                # outstanding trumps, so just ruff low)
+                return min(trumps, key=lambda c: c.rank)
+
+    # Discard lowest
+    return min(hand, key=lambda c: (c.rank, c.suit))
+
+
+def _heuristic_lead(seat: int, hand: List[Card],
+                    trump: Optional[Suit], declarer: int) -> Card:
+    """Heuristic card selection for leading (MC simulation).
+
+    Leads from longest suit, lowest card (to preserve high cards).
+    Avoids leading trump. Prefers established high cards.
+    """
+    # Group by suit, skip trump
+    suits = {}
+    for c in hand:
+        if c.suit != trump:
+            suits.setdefault(c.suit, []).append(c)
+
+    # If only trumps left, lead trump
+    if not suits:
+        suits = {}
+        for c in hand:
+            suits.setdefault(c.suit, []).append(c)
+
+    # Prefer longest suit; break ties by highest top card
+    best_suit_cards = max(suits.values(),
+                         key=lambda cards: (len(cards),
+                                            max(c.rank for c in cards)))
+
+    # Lead top card from longest suit (cash winners first)
+    return max(best_suit_cards, key=lambda c: c.rank)
+
+
+# ---------------------------------------------------------------------------
 # CardTracker — counts cards and infers distributions
 # ---------------------------------------------------------------------------
 
@@ -926,7 +1036,10 @@ class StateMachineCardPlayer:
 
     def _greedy_playout(self, first_card, current_trick, hands,
                         trump_suit, declarer, dummy_seat, first_seat):
-        """Complete the current trick and play remaining tricks greedily.
+        """Complete the current trick and play remaining tricks using heuristics.
+
+        Uses _heuristic_follow and _heuristic_lead instead of greedy
+        "play highest" to produce realistic trick estimates.
 
         Returns tricks won by declarer's side.
         """
@@ -934,29 +1047,23 @@ class StateMachineCardPlayer:
 
         # Complete the current trick
         if current_trick and current_trick.cards:
-            # Cards already played in this trick
             trick_cards = dict(current_trick.cards)
             trick_cards[first_seat] = first_card
             leader = current_trick.leader
+            led_suit = current_trick.led_suit()
             order = [(leader + i) % 4 for i in range(4)]
             for seat in order:
                 if seat in trick_cards:
                     continue
-                # Greedy: play highest winning card or lowest loser
                 h = hands.get(seat, [])
-                led = current_trick.led_suit()
-                following = [c for c in h if c.suit == led]
-                if not following:
-                    following = h
-                if not following:
+                if not h:
                     continue
-                # Play highest
-                pick = max(following, key=lambda c: c.rank)
+                pick = _heuristic_follow(seat, h, led_suit, trick_cards,
+                                         leader, trump_suit, declarer)
                 trick_cards[seat] = pick
-                if seat in hands and pick in hands[seat]:
+                if pick in hands[seat]:
                     hands[seat].remove(pick)
 
-            # Determine winner
             winner = self._greedy_trick_winner(trick_cards, leader, trump_suit)
             if winner % 2 == declarer % 2:
                 dec_tricks += 1
@@ -967,16 +1074,14 @@ class StateMachineCardPlayer:
                 hands[first_seat].remove(first_card)
             trick_cards = {first_seat: first_card}
             leader = first_seat
+            led_suit = first_card.suit
             order = [(leader + i) % 4 for i in range(4)]
             for seat in order[1:]:
                 h = hands.get(seat, [])
                 if not h:
                     continue
-                led = first_card.suit
-                following = [c for c in h if c.suit == led]
-                if not following:
-                    following = h
-                pick = max(following, key=lambda c: c.rank)
+                pick = _heuristic_follow(seat, h, led_suit, trick_cards,
+                                         leader, trump_suit, declarer)
                 trick_cards[seat] = pick
                 hands[seat].remove(pick)
 
@@ -985,8 +1090,8 @@ class StateMachineCardPlayer:
                 dec_tricks += 1
             next_leader = winner
 
-        # Play remaining tricks greedily
-        for _ in range(12):  # max remaining tricks
+        # Play remaining tricks with heuristic play
+        for _ in range(12):
             if not any(hands.get(s) for s in range(4)):
                 break
             trick_cards = {}
@@ -997,14 +1102,12 @@ class StateMachineCardPlayer:
                 if not h:
                     continue
                 if led_suit is None:
-                    # Leader picks highest card in best suit
-                    pick = max(h, key=lambda c: c.rank)
+                    # Leader uses heuristic lead selection
+                    pick = _heuristic_lead(seat, h, trump_suit, declarer)
                     led_suit = pick.suit
                 else:
-                    following = [c for c in h if c.suit == led_suit]
-                    if not following:
-                        following = h
-                    pick = max(following, key=lambda c: c.rank)
+                    pick = _heuristic_follow(seat, h, led_suit, trick_cards,
+                                             order[0], trump_suit, declarer)
                 trick_cards[seat] = pick
                 hands[seat].remove(pick)
 
