@@ -999,12 +999,18 @@ class StateMachineBidder:
                     if b:
                         return b
 
-        # Weak 2: 6-card suit in D/H/S (2C reserved for strong).
+        # Weak 2: 6-card suit in D/H/S (2C reserved for strong). Require
+        # the suit to contain at least one top honor (A/K/Q) — naked
+        # JT-headed six-baggers produce penalties more often than game
+        # swings.
         if self.params.use_weak_twos and (
                 self.params.weak_two_min_hcp <= h
                 <= self.params.weak_two_max_hcp):
             for suit in (Suit.S, Suit.H, Suit.D):
-                if shape.length(suit) == 6 and suit_quality(hand, suit) >= 2:
+                if (shape.length(suit) == 6
+                        and suit_quality(hand, suit) >= 2
+                        and any(c.suit == suit and c.rank >= Rank.QUEEN
+                                for c in hand)):
                     b = self._best_valid(2, suit, valid)
                     if b:
                         return b
@@ -1202,20 +1208,27 @@ class StateMachineBidder:
     def _respond_to_preempt(self, hand: List[Card], h: int,
                              shape: HandShape, opening: Bid,
                              valid: list) -> Bid:
-        """Respond to partner's 3-level or 4-level preempt."""
+        """Respond to partner's 3-level or 4-level preempt.
+
+        Preempts by partner are highly shape-driven but HCP-light (5-10).
+        Raises to game are expensive on partial fits: the raise gate now
+        requires the full preempt_raise_game_min_hcp (15+ by default) so
+        we stop lighting 4M on 18-count combined.
+        """
         strain = opening.strain
         support = suit_length(hand, strain)
+        min_raise = self.params.preempt_raise_game_min_hcp
 
-        # Raise to game in a major with a fit and values.
-        if (strain in (Suit.H, Suit.S) and support >= 2 and h >= 13
-                and opening.level == 3):
+        # Raise to game in a major: need 2+ support AND enough HCP.
+        if (strain in (Suit.H, Suit.S) and opening.level == 3
+                and h >= min_raise and support >= 2):
             b = self._best_valid(4, strain, valid)
             if b:
                 return b
 
         # 3NT with stoppers over 3-level minor preempt and strong hand.
         if (opening.level == 3 and strain in (Suit.C, Suit.D)
-                and h >= 14 and all_suits_stopped(hand)):
+                and h >= min_raise and all_suits_stopped(hand)):
             b = self._best_valid(3, Suit.NT, valid)
             if b:
                 return b

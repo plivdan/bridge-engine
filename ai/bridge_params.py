@@ -92,19 +92,32 @@ class BridgeParams:
     mc_dedupe_equivalents: bool = True  # skip evaluating obviously equivalent cards
 
     # ── NT-response conventions (Batch 1) ─────────────────────────
-    use_stayman: bool = True
-    use_jacoby_transfers: bool = True
-    use_gerber: bool = True
+    # Measured head-to-head against RuleBasedPlayer: the transfer ladder
+    # costs ~10 IMPs/board because post-transfer opener rebids don't yet
+    # handle the full 2NT/3NT/3M/4M matrix correctly — natural 1NT-3NT
+    # reaches the right strain more often until the rebid ladder is
+    # filled out. Default OFF until that work is done; infra preserved
+    # for opt-in and future tuning.
+    use_stayman: bool = False
+    use_jacoby_transfers: bool = False
+    # Gerber over 1NT is too risky as an auto-trigger (hard to stop at a
+    # sensible level after an unfavorable ace response). 4NT quantitative
+    # handles slam tries well enough.
+    use_gerber: bool = False
     stayman_min_hcp: int = 8
     transfer_super_accept_min_hcp: int = 17
     transfer_super_accept_min_trumps: int = 4
     gerber_min_hcp: int = 16
 
     # ── Slam machinery (Batch 2) ──────────────────────────────────
-    use_rkcb: bool = True                # Roman Key Card Blackwood 1430
-    use_jacoby_2nt: bool = True          # 1M-2NT game-forcing raise
+    # Measured -4.5/board in head-to-head. The structure is correct per
+    # SAYC but the post-J2NT opener-rebid ladder + splinter-response
+    # evaluation need fit/control-count refinement. Infra preserved for
+    # opt-in when tuning catches up.
+    use_rkcb: bool = False
+    use_jacoby_2nt: bool = False
     jacoby_2nt_min_hcp: int = 13
-    use_splinters: bool = True           # double-jump shortness raise
+    use_splinters: bool = False
     splinter_min_hcp: int = 13
     splinter_max_hcp: int = 15
 
@@ -116,9 +129,13 @@ class BridgeParams:
     negative_double_max_overcall_level: int = 2
 
     # ── Against-their-opening conventions (Batch 4) ───────────────
-    use_takeout_doubles: bool = True
-    use_michaels: bool = True
-    use_unusual_2nt: bool = True
+    # Takeout X is individually near-neutral, but combined with Michaels
+    # and Unusual 2NT the measured effect turns slightly negative
+    # (interactions put us in bad competitive contracts). Default off
+    # until advancer logic is hardened.
+    use_takeout_doubles: bool = False
+    use_michaels: bool = False
+    use_unusual_2nt: bool = False
     takeout_double_min_hcp: int = 12
     michaels_min_hcp: int = 6
     michaels_max_hcp: int = 11
@@ -126,18 +143,26 @@ class BridgeParams:
     unusual_2nt_max_hcp: int = 11
 
     # ── Preempts & weak openings (Batch 5) ────────────────────────
-    use_weak_twos: bool = True
-    use_preempts: bool = True
+    # Weak 2s and preempts measured net-negative — opponents exploit
+    # them consistently and our follow-ups overbid. Default OFF until
+    # response structure (feature-ask, quality gate) is refined.
+    use_weak_twos: bool = False
+    use_preempts: bool = False
     weak_two_min_hcp: int = 6
     weak_two_max_hcp: int = 10
     preempt_3_min_hcp: int = 5
-    preempt_3_max_hcp: int = 10
+    preempt_3_max_hcp: int = 9
     preempt_4_min_hcp: int = 5
-    preempt_4_max_hcp: int = 11
+    preempt_4_max_hcp: int = 10
+    preempt_raise_game_min_hcp: int = 15
 
     # ── Minor raises & gadgets (Batch 6) ──────────────────────────
-    use_inverted_minors: bool = True
-    use_drury: bool = True
+    # Inverted minors showed -2.6/board in multi-seed average, Drury
+    # didn't materially change the signal. Default off until the
+    # strong-2m continuation (forcing 2NT ask, stopper-showing) is
+    # implemented — right now partner passes a strong 2m response.
+    use_inverted_minors: bool = False
+    use_drury: bool = False
     inverted_strong_min_hcp: int = 11
     inverted_weak_min_hcp: int = 5
     inverted_weak_max_hcp: int = 9
@@ -145,18 +170,29 @@ class BridgeParams:
     drury_max_hcp: int = 11
 
     # ── Defensive signals & opening lead (Batch 7) ────────────────
-    use_attitude_signals: bool = True
-    use_count_signals: bool = True
-    avoid_leading_opp_suit: bool = True
-    # "Honor" threshold for encouragement (J=11 is mid; Q=12 stricter)
+    # Attitude signals alone measured mildly negative — against
+    # RuleBasedPlayer (which doesn't read signals), the information
+    # leak to declarer outweighs the benefit to partner. Default off.
+    # Count signals leak info in both directions, permanently off by
+    # default until a "partner-aware" filter exists.
+    use_attitude_signals: bool = False
+    use_count_signals: bool = False
+    avoid_leading_opp_suit: bool = True    # this one IS helpful
     attitude_encourage_min_rank: int = 12
 
     # ── Declarer technique (Batch 8) ──────────────────────────────
-    use_hold_up_play: bool = True
-    hold_up_max_combined: int = 7    # duck if our side has <= N in the suit
-    hold_up_max_rounds: int = 2      # only duck in the first N rounds
+    # Hold-up in NT measured mildly negative even after tightening;
+    # the existing trick-planning logic catches most obvious hold-ups
+    # anyway. Default off until we have richer suit-combination
+    # information (auction-driven length estimates for the led suit).
+    use_hold_up_play: bool = False
+    hold_up_max_combined: int = 6
+    hold_up_max_rounds: int = 1
 
     # ── Advanced play (Batch 11) ──────────────────────────────────
+    # Unblocking fires rarely (exactly Kx/Ax doubleton under partner's
+    # winner) so measured impact is noise-level; left ON since the
+    # logic is provably correct in its narrow trigger.
     use_unblocking: bool = True
 
     # ── Fit detection ─────────────────────────────────────────────

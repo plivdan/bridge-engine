@@ -11,6 +11,18 @@ from engine.card import Card, Suit, Rank
 from engine.auction import AuctionState, Bid, PASS, DOUBLE, REDOUBLE, make_bid
 from ai.hand_eval import hcp, hand_shape, total_points, distribution_points
 from ai.bidding_agent import StateMachineBidder
+from ai.bridge_params import BridgeParams
+
+# Convention-tests: force every feature ON regardless of the conservative
+# shipping defaults, so these tests exercise the code paths they describe.
+_CONV = BridgeParams(
+    use_stayman=True, use_jacoby_transfers=True, use_gerber=True,
+    use_rkcb=True, use_jacoby_2nt=True, use_splinters=True,
+    use_negative_doubles=True, use_support_doubles=True,
+    use_takeout_doubles=True, use_michaels=True, use_unusual_2nt=True,
+    use_weak_twos=True, use_preempts=True,
+    use_inverted_minors=True, use_drury=True,
+)
 
 PASS_COUNT = 0
 FAIL_COUNT = 0
@@ -350,7 +362,7 @@ hand_stayman = _pad_hand(
 check(hcp(hand_stayman) == 10, f"Stayman test hand HCP = {hcp(hand_stayman)} (expect 10)")
 check(hand_shape(hand_stayman).length(Suit.H) == 4, "Stayman hand has 4 hearts")
 
-resp = StateMachineBidder(2)
+resp = StateMachineBidder(2, params=_CONV)
 calls_1nt = [make_bid(1, Suit.NT), PASS]
 obs = make_obs(hand_stayman, calls=calls_1nt, dealer=0, player=2)
 bid = resp.bid(obs)
@@ -415,7 +427,7 @@ opener_min = _pad_hand(
 check(hcp(opener_min) == 15, f"opener_min HCP = {hcp(opener_min)} (expect 15)")
 
 # Seat 0 opens 1NT, seat 1 PASS, seat 2 (partner) 2D, seat 3 PASS, seat 0 rebids
-opener = StateMachineBidder(0)
+opener = StateMachineBidder(0, params=_CONV)
 calls_after_transfer = [
     make_bid(1, Suit.NT),  # N: 1NT
     PASS,                   # E
@@ -851,7 +863,7 @@ check(hcp(hand_takeout) == 13, f"takeout hand HCP = {hcp(hand_takeout)} (expect 
 check(hand_shape(hand_takeout).length(Suit.H) == 1, "takeout has singleton heart")
 
 # Dealer=0, N opens 1H, E is overcaller — I (seat 1=E) decide.
-overcaller = StateMachineBidder(1)
+overcaller = StateMachineBidder(1, params=_CONV)
 calls_1h = [make_bid(1, Suit.H)]
 obs = make_obs(hand_takeout, calls=calls_1h, dealer=0, player=1)
 bid = overcaller.bid(obs)
@@ -917,7 +929,7 @@ check(bid == make_bid(2, Suit.NT),
 # Advance takeout X: partner X'd over (1H), I have 8 HCP and 4 spades.
 # Auction: (1H by LHO=N) X by partner=E, P by RHO=S, me=W to bid.
 # Dealer=0 (N). calls = [1H(N), X(E), P(S)], next = W (seat 3).
-advancer = StateMachineBidder(3)
+advancer = StateMachineBidder(3, params=_CONV)
 hand_adv_med = _pad_hand(
     [Card(Rank.KING, Suit.S), Card(Rank.QUEEN, Suit.S),
      Card(Rank.JACK, Suit.D)],
@@ -959,7 +971,7 @@ hand_weak_2h = _pad_hand(
 check(hcp(hand_weak_2h) == 7, f"weak_2h HCP = {hcp(hand_weak_2h)} (expect 7)")
 check(hand_shape(hand_weak_2h).length(Suit.H) == 6, "weak_2h has 6 hearts")
 
-opener_b5 = StateMachineBidder(0)
+opener_b5 = StateMachineBidder(0, params=_CONV)
 obs = make_obs(hand_weak_2h, dealer=0, player=0)
 bid = opener_b5.bid(obs)
 check(bid == make_bid(2, Suit.H),

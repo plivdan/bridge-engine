@@ -590,7 +590,9 @@ with contextlib.redirect_stdout(io.StringIO()):
     ps_enc.play_card(3, Card(Rank.ACE, Suit.H))
     ps_enc.play_card(0, Card(Rank.TWO, Suit.H))  # declarer plays low
 
-cp_enc = StateMachineCardPlayer(1)
+from ai.bridge_params import BridgeParams
+_signal_params = BridgeParams(use_attitude_signals=True)
+cp_enc = StateMachineCardPlayer(1, params=_signal_params)
 obs = make_play_obs(ps_enc, 1)
 card = cp_enc.play_card(obs)
 # I hold Q/9/5 remaining; should play 9 (high spot) to encourage.
@@ -630,7 +632,7 @@ with contextlib.redirect_stdout(io.StringIO()):
     ps_dis.play_card(3, Card(Rank.ACE, Suit.H))
     ps_dis.play_card(0, Card(Rank.JACK, Suit.H))  # declarer J (A still winning)
 
-cp_dis = StateMachineCardPlayer(1)
+cp_dis = StateMachineCardPlayer(1, params=_signal_params)
 obs = make_play_obs(ps_dis, 1)
 card = cp_dis.play_card(obs)
 # I have 9/7/5 hearts remaining; can't beat the A anyway. Discourage: play 5.
@@ -667,7 +669,8 @@ with contextlib.redirect_stdout(io.StringIO()):
     ps_holdup.play_card(0, Card(Rank.THREE, Suit.H))  # declarer plays dummy's low
     ps_holdup.play_card(3, Card(Rank.FIVE, Suit.H))   # W low
 
-cp_hu = StateMachineCardPlayer(0)
+_holdup_params = BridgeParams(use_hold_up_play=True)
+cp_hu = StateMachineCardPlayer(0, params=_holdup_params)
 obs = make_play_obs(ps_holdup, 0)
 card = cp_hu.play_card(obs)
 # Hold-up: duck round 1 rather than cash the ace.
@@ -699,7 +702,7 @@ with contextlib.redirect_stdout(io.StringIO()):
     ps_no_hu.play_card(0, Card(Rank.THREE, Suit.H))  # declarer plays dummy
     ps_no_hu.play_card(3, Card(Rank.FIVE, Suit.H))
 
-cp_no_hu = StateMachineCardPlayer(0)
+cp_no_hu = StateMachineCardPlayer(0, params=_holdup_params)
 obs = make_play_obs(ps_no_hu, 0)
 card = cp_no_hu.play_card(obs)
 # Can win with the K (non-ace winner) — take cheaply, don't hold up.
