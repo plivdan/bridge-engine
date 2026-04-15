@@ -110,6 +110,16 @@ class BridgeParams:
     negative_double_min_hcp_2lvl: int = 8
     negative_double_max_overcall_level: int = 2
 
+    # ── Against-their-opening conventions (Batch 4) ───────────────
+    use_takeout_doubles: bool = True
+    use_michaels: bool = True
+    use_unusual_2nt: bool = True
+    takeout_double_min_hcp: int = 12
+    michaels_min_hcp: int = 6
+    michaels_max_hcp: int = 11
+    unusual_2nt_min_hcp: int = 5
+    unusual_2nt_max_hcp: int = 11
+
     # ── Fit detection ─────────────────────────────────────────────
     fit_min_support_major: int = 3
     fit_min_support_general: int = 4

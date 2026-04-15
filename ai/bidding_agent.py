@@ -1647,19 +1647,72 @@ class StateMachineBidder:
         valid = obs['valid_calls']
         h = hcp(hand)
         shape = hand_shape(hand)
-
-        # 1NT overcall: 15-17 balanced with stopper in their suit
         calls = obs.get('calls', [])
+        dealer = obs['dealer']
+
+        # Identify the first opponent's opening suit
         opp_suit = None
         for c in calls:
             if not c.special:
                 opp_suit = c.strain
                 break
 
-        if self.params.overcall_1nt_min <= h <= self.params.overcall_1nt_max and shape.is_balanced and opp_suit and stopper(hand, opp_suit):
+        # If partner has already acted (takeout X / Michaels / Unusual 2NT),
+        # respond as advancer rather than re-overcalling.
+        if self._partner_last_call_is_double(calls, dealer):
+            result = self._respond_to_takeout_double(
+                hand, h, shape, opp_suit, valid)
+            if result is not None:
+                return result
+
+        # 1NT overcall: 15-17 balanced with stopper in their suit
+        if (self.params.overcall_1nt_min <= h <= self.params.overcall_1nt_max
+                and shape.is_balanced and opp_suit
+                and stopper(hand, opp_suit)):
             b = self._best_valid(1, Suit.NT, valid)
             if b:
                 return b
+
+        # Unusual 2NT: 5-5+ in the two lower unbid suits (weak range).
+        # Standard scope: over 1H or 1S this shows both minors.
+        if (self.params.use_unusual_2nt
+                and opp_suit in (Suit.H, Suit.S)
+                and self.params.unusual_2nt_min_hcp <= h
+                <= self.params.unusual_2nt_max_hcp
+                and shape.length(Suit.C) >= 5
+                and shape.length(Suit.D) >= 5):
+            b = self._best_valid(2, Suit.NT, valid)
+            if b:
+                return b
+
+        # Michaels cuebid: opp suit at 2-level = two-suited showing.
+        if (self.params.use_michaels and opp_suit is not None
+                and self.params.michaels_min_hcp <= h
+                <= self.params.michaels_max_hcp):
+            if opp_suit in (Suit.C, Suit.D):
+                if shape.length(Suit.H) >= 5 and shape.length(Suit.S) >= 5:
+                    b = self._best_valid(2, opp_suit, valid)
+                    if b:
+                        return b
+            elif opp_suit == Suit.H:
+                if shape.length(Suit.S) >= 5 and (
+                        shape.length(Suit.C) >= 5 or shape.length(Suit.D) >= 5):
+                    b = self._best_valid(2, opp_suit, valid)
+                    if b:
+                        return b
+            elif opp_suit == Suit.S:
+                if shape.length(Suit.H) >= 5 and (
+                        shape.length(Suit.C) >= 5 or shape.length(Suit.D) >= 5):
+                    b = self._best_valid(2, opp_suit, valid)
+                    if b:
+                        return b
+
+        # Takeout double: 12+ HCP, short in opp's suit, support for
+        # each unbid suit. Classic shape 4-4-4-1 / 4-3-4-2 short in opp.
+        if (self.params.use_takeout_doubles and DOUBLE in valid
+                and opp_suit is not None
+                and self._meets_takeout_double(hand, h, shape, opp_suit)):
+            return DOUBLE
 
         # Suit overcall: 10-16 HCP with 5+ card suit and quality
         if self.params.overcall_min_hcp <= h <= self.params.overcall_max_hcp:
@@ -1673,7 +1726,6 @@ class StateMachineBidder:
         if h >= self.params.overcall_strong_min:
             if DOUBLE in valid:
                 return DOUBLE
-            # bid own suit
             for suit in (Suit.S, Suit.H, Suit.D, Suit.C):
                 if shape.length(suit) >= 5:
                     b = self._cheapest_in_suit(suit, valid)
@@ -1681,6 +1733,63 @@ class StateMachineBidder:
                         return b
 
         return PASS
+
+    def _meets_takeout_double(self, hand: List[Card], h: int,
+                               shape: HandShape, opp_suit: Suit) -> bool:
+        """Classic takeout: 12+ HCP, short in opp suit (≤2), 3+ in each
+        unbid suit. Rules out a 5+ card suit of our own (that's an
+        overcall, not a X)."""
+        if h < self.params.takeout_double_min_hcp:
+            return False
+        if shape.length(opp_suit) > 2:
+            return False
+        # Decent support for every unbid suit.
+        unbid = [s for s in (Suit.S, Suit.H, Suit.D, Suit.C) if s != opp_suit]
+        if any(shape.length(s) < 3 for s in unbid):
+            return False
+        # Not if we have a clear 5+ card overcall suit — prefer the overcall.
+        for s in unbid:
+            if shape.length(s) >= 5 and suit_quality(hand, s) >= 2:
+                # Only defer when HCP falls inside the overcall range.
+                if (self.params.overcall_min_hcp <= h
+                        <= self.params.overcall_max_hcp):
+                    return False
+        return True
+
+    def _respond_to_takeout_double(self, hand: List[Card], h: int,
+                                    shape: HandShape,
+                                    opp_suit: Optional[Suit],
+                                    valid: list) -> Optional[Bid]:
+        """Advance partner's takeout X: bid the longest unbid suit,
+        jumping with invitational values, cuebidding with game-forcing."""
+        if opp_suit is None:
+            return None
+        unbid = [s for s in (Suit.S, Suit.H, Suit.D, Suit.C) if s != opp_suit]
+        # Rank by length desc, then majors over minors
+        unbid.sort(
+            key=lambda s: (-shape.length(s),
+                           0 if s in (Suit.H, Suit.S) else 1))
+        best_suit = unbid[0]
+
+        # Game-forcing strength + stopper: cuebid opp's suit.
+        if h >= 13 and stopper(hand, opp_suit):
+            b = self._best_valid(2, opp_suit, valid)
+            if b:
+                return b
+
+        # Invitational (9-12): jump in best suit
+        if h >= 9:
+            # Find one level above the cheapest available bid in best_suit.
+            cheapest = self._cheapest_in_suit(best_suit, valid)
+            if cheapest is not None:
+                jump = self._best_valid(cheapest.level + 1, best_suit, valid)
+                if jump:
+                    return jump
+                return cheapest
+
+        # Weak (0-8): cheapest in best unbid suit
+        b = self._cheapest_in_suit(best_suit, valid)
+        return b if b else PASS
 
     # ------------------------------------------------------------------
     # COMPETITIVE

@@ -837,6 +837,114 @@ check(bid.strain == Suit.H and bid.level >= 3 and not bid.special,
       f"1C-(P)-1H-(1S)-X-(P), 5H + ~11 HCP -> raise hearts (got {bid})")
 
 
+# ── AGAINST THEIR OPENING (Batch 4) ──────────────────────────────
+section("AGAINST THEIR OPENING: TAKEOUT / MICHAELS / UNUSUAL 2NT")
+
+# Takeout double: RHO opens 1H, I have 13 HCP 4-1-4-4 short in hearts.
+# Axxx S (4) + x H (0) + AQxx D (6) + Kxxx C (3) = 13 HCP
+hand_takeout = _pad_hand(
+    [Card(Rank.ACE, Suit.S), Card(Rank.ACE, Suit.D),
+     Card(Rank.QUEEN, Suit.D), Card(Rank.KING, Suit.C)],
+    {Suit.S: 4, Suit.H: 1, Suit.D: 4, Suit.C: 4},
+)
+check(hcp(hand_takeout) == 13, f"takeout hand HCP = {hcp(hand_takeout)} (expect 13)")
+check(hand_shape(hand_takeout).length(Suit.H) == 1, "takeout has singleton heart")
+
+# Dealer=0, N opens 1H, E is overcaller — I (seat 1=E) decide.
+overcaller = StateMachineBidder(1)
+calls_1h = [make_bid(1, Suit.H)]
+obs = make_obs(hand_takeout, calls=calls_1h, dealer=0, player=1)
+bid = overcaller.bid(obs)
+check(bid == DOUBLE,
+      f"(1H) - ?, 13 HCP 4-1-4-4 -> X takeout (got {bid})")
+
+# Weak hand → PASS, no takeout
+hand_pass = _pad_hand(
+    [Card(Rank.JACK, Suit.S), Card(Rank.EIGHT, Suit.D)],
+    {Suit.S: 4, Suit.H: 1, Suit.D: 4, Suit.C: 4},
+)
+check(hcp(hand_pass) <= 5, f"pass hand HCP = {hcp(hand_pass)}")
+obs = make_obs(hand_pass, calls=calls_1h, dealer=0, player=1)
+bid = overcaller.bid(obs)
+check(bid == PASS, f"(1H), weak 4-1-4-4 -> PASS (got {bid})")
+
+# Takeout with 5-card major + 12 HCP → prefer overcall, not X
+# AQxxx S + x H + Kxx D + Qxxx C = 6+0+3+2 = 11 HCP actually
+# AKxxx S + x H + Kxx D + Qxxx C = 7+0+3+2 = 12 HCP
+hand_overcall = _pad_hand(
+    [Card(Rank.ACE, Suit.S), Card(Rank.KING, Suit.S),
+     Card(Rank.KING, Suit.D), Card(Rank.QUEEN, Suit.C)],
+    {Suit.S: 5, Suit.H: 1, Suit.D: 3, Suit.C: 4},
+)
+check(hcp(hand_overcall) == 12, f"overcall hand HCP = {hcp(hand_overcall)} (expect 12)")
+obs = make_obs(hand_overcall, calls=calls_1h, dealer=0, player=1)
+bid = overcaller.bid(obs)
+check(bid != DOUBLE and bid.strain == Suit.S,
+      f"(1H), 12 HCP + 5S -> 1S overcall (got {bid})")
+
+# Michaels: (1D) with 5-5 in majors, 8 HCP
+# AQxxx S (6) + KJxxx H (4) + x D (0) + xx C (0) = 10 HCP, 5-5-1-2
+hand_michaels = _pad_hand(
+    [Card(Rank.ACE, Suit.S), Card(Rank.QUEEN, Suit.S),
+     Card(Rank.KING, Suit.H), Card(Rank.JACK, Suit.H)],
+    {Suit.S: 5, Suit.H: 5, Suit.D: 1, Suit.C: 2},
+)
+check(hand_shape(hand_michaels).length(Suit.S) == 5
+      and hand_shape(hand_michaels).length(Suit.H) == 5,
+      "michaels hand is 5-5 majors")
+calls_1d = [make_bid(1, Suit.D)]
+obs = make_obs(hand_michaels, calls=calls_1d, dealer=0, player=1)
+bid = overcaller.bid(obs)
+check(bid == make_bid(2, Suit.D),
+      f"(1D), 5-5 majors in-range -> 2D Michaels (got {bid})")
+
+# Unusual 2NT: (1H) with 5-5 minors, 8 HCP
+# xx S + xx H + AQxxx D + KJxxx C = 0+0+6+4 = 10 HCP, 2-2-5-5... wait 14 cards.
+# x S + xx H + AQxxx D + KJxxx C = 13 cards, 10 HCP, 1-2-5-5
+hand_unusual = _pad_hand(
+    [Card(Rank.ACE, Suit.D), Card(Rank.QUEEN, Suit.D),
+     Card(Rank.KING, Suit.C), Card(Rank.JACK, Suit.C)],
+    {Suit.S: 1, Suit.H: 2, Suit.D: 5, Suit.C: 5},
+)
+check(hand_shape(hand_unusual).length(Suit.D) == 5
+      and hand_shape(hand_unusual).length(Suit.C) == 5,
+      "unusual hand is 5-5 minors")
+obs = make_obs(hand_unusual, calls=calls_1h, dealer=0, player=1)
+bid = overcaller.bid(obs)
+check(bid == make_bid(2, Suit.NT),
+      f"(1H), 5-5 minors weak-to-med -> 2NT Unusual (got {bid})")
+
+# Advance takeout X: partner X'd over (1H), I have 8 HCP and 4 spades.
+# Auction: (1H by LHO=N) X by partner=E, P by RHO=S, me=W to bid.
+# Dealer=0 (N). calls = [1H(N), X(E), P(S)], next = W (seat 3).
+advancer = StateMachineBidder(3)
+hand_adv_med = _pad_hand(
+    [Card(Rank.KING, Suit.S), Card(Rank.QUEEN, Suit.S),
+     Card(Rank.JACK, Suit.D)],
+    {Suit.S: 4, Suit.H: 3, Suit.D: 3, Suit.C: 3},
+)
+check(hcp(hand_adv_med) >= 5 and hcp(hand_adv_med) <= 8,
+      f"adv_med HCP = {hcp(hand_adv_med)} (expect 5-8)")
+
+calls_after_takeout = [make_bid(1, Suit.H), DOUBLE, PASS]
+obs = make_obs(hand_adv_med, calls=calls_after_takeout, dealer=0, player=3)
+bid = advancer.bid(obs)
+check(bid.strain == Suit.S and bid.level in (1, 2) and not bid.special,
+      f"(1H)-X-(P), 7 HCP + 4S -> 1S/2S minimum (got {bid})")
+
+# Advance takeout X with jump: 10+ HCP
+hand_adv_jump = _pad_hand(
+    [Card(Rank.ACE, Suit.S), Card(Rank.KING, Suit.S),
+     Card(Rank.QUEEN, Suit.S), Card(Rank.JACK, Suit.D)],
+    {Suit.S: 4, Suit.H: 3, Suit.D: 3, Suit.C: 3},
+)
+check(hcp(hand_adv_jump) >= 9, f"adv_jump HCP = {hcp(hand_adv_jump)} (expect 9+)")
+obs = make_obs(hand_adv_jump, calls=calls_after_takeout, dealer=0, player=3)
+bid = advancer.bid(obs)
+check(bid.strain == Suit.S and bid.level >= 2 and not bid.special,
+      f"(1H)-X-(P), 10 HCP + 4S -> jump 2S+ (got {bid})")
+
+
 # ── SUMMARY ──────────────────────────────────────────────────────
 section("SUMMARY")
 total = PASS_COUNT + FAIL_COUNT
