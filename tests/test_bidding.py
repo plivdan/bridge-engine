@@ -945,6 +945,147 @@ check(bid.strain == Suit.S and bid.level >= 2 and not bid.special,
       f"(1H)-X-(P), 10 HCP + 4S -> jump 2S+ (got {bid})")
 
 
+# ── PREEMPTS & WEAK OPENINGS (Batch 5) ───────────────────────────
+section("PREEMPTS & WEAK OPENINGS: WEAK 2s / 3-LEVEL / 4-LEVEL")
+
+# Weak 2H: 8 HCP, 6-card hearts with decent quality → 2H
+# KQJxxx H (6) + xxx S + xx D + xx C: 6 HCP + 8 HCP? Let me count.
+# KQJ = 3+2+1 = 6. Add 10/9/8 = 0.
+hand_weak_2h = _pad_hand(
+    [Card(Rank.KING, Suit.H), Card(Rank.QUEEN, Suit.H),
+     Card(Rank.JACK, Suit.H), Card(Rank.JACK, Suit.S)],
+    {Suit.S: 3, Suit.H: 6, Suit.D: 2, Suit.C: 2},
+)
+check(hcp(hand_weak_2h) == 7, f"weak_2h HCP = {hcp(hand_weak_2h)} (expect 7)")
+check(hand_shape(hand_weak_2h).length(Suit.H) == 6, "weak_2h has 6 hearts")
+
+opener_b5 = StateMachineBidder(0)
+obs = make_obs(hand_weak_2h, dealer=0, player=0)
+bid = opener_b5.bid(obs)
+check(bid == make_bid(2, Suit.H),
+      f"7 HCP + KQJxxx hearts -> 2H weak (got {bid})")
+
+# 3-level preempt: 7 HCP, 7-card spades with good quality → 3S
+# KQJxxxx S (6 HCP) + xx H + xx D + xx C = 6 HCP. Let me add a few.
+# KQJTxxx S + xx H + Jx D + xx C = 7 HCP, 7-2-2-2
+hand_3s_pre = _pad_hand(
+    [Card(Rank.KING, Suit.S), Card(Rank.QUEEN, Suit.S),
+     Card(Rank.JACK, Suit.S), Card(Rank.TEN, Suit.S),
+     Card(Rank.JACK, Suit.D)],
+    {Suit.S: 7, Suit.H: 2, Suit.D: 2, Suit.C: 2},
+)
+check(hcp(hand_3s_pre) == 7, f"3s_pre HCP = {hcp(hand_3s_pre)} (expect 7)")
+check(hand_shape(hand_3s_pre).length(Suit.S) == 7, "3s_pre has 7 spades")
+obs = make_obs(hand_3s_pre, dealer=0, player=0)
+bid = opener_b5.bid(obs)
+check(bid == make_bid(3, Suit.S),
+      f"7 HCP + 7-card spades -> 3S preempt (got {bid})")
+
+# 4-level preempt: 8 HCP, 8-card hearts → 4H
+# KQxxxxxx H (5) + Jx S + x D + xx C = 6 HCP. Need 8 cards H.
+# KQJxxxxx H (6) + xx S + xx D + x C = 6 HCP, 8-2-2-1. Still 5 HCP.
+# Let's just aim for something legal with 5-11 HCP and 8 hearts.
+hand_4h_pre = _pad_hand(
+    [Card(Rank.KING, Suit.H), Card(Rank.QUEEN, Suit.H),
+     Card(Rank.JACK, Suit.H), Card(Rank.JACK, Suit.S)],
+    {Suit.S: 2, Suit.H: 8, Suit.D: 2, Suit.C: 1},
+)
+check(hand_shape(hand_4h_pre).length(Suit.H) == 8, "4h_pre has 8 hearts")
+check(5 <= hcp(hand_4h_pre) <= 11, f"4h_pre HCP in preempt range: {hcp(hand_4h_pre)}")
+obs = make_obs(hand_4h_pre, dealer=0, player=0)
+bid = opener_b5.bid(obs)
+check(bid == make_bid(4, Suit.H),
+      f"7 HCP + 8-card hearts -> 4H preempt (got {bid})")
+
+# Weak 2 rejected: 5-card hearts (not 6) → no weak 2, should PASS
+hand_no_weak = _pad_hand(
+    [Card(Rank.KING, Suit.H), Card(Rank.QUEEN, Suit.H),
+     Card(Rank.JACK, Suit.H), Card(Rank.JACK, Suit.S)],
+    {Suit.S: 3, Suit.H: 5, Suit.D: 3, Suit.C: 2},
+)
+check(hand_shape(hand_no_weak).length(Suit.H) == 5, "no_weak has 5 hearts (not 6)")
+obs = make_obs(hand_no_weak, dealer=0, player=0)
+bid = opener_b5.bid(obs)
+check(bid == PASS,
+      f"7 HCP + 5-card hearts -> PASS (no weak 2) (got {bid})")
+
+# Strong hand with 6-card hearts → open 1H (not weak 2)
+# AKQxxx H + Kx S + Axx D + xxx C = 9+3+4+0 = 16 HCP
+hand_1h_strong = _pad_hand(
+    [Card(Rank.ACE, Suit.H), Card(Rank.KING, Suit.H),
+     Card(Rank.QUEEN, Suit.H), Card(Rank.KING, Suit.S),
+     Card(Rank.ACE, Suit.D)],
+    {Suit.S: 2, Suit.H: 6, Suit.D: 3, Suit.C: 2},
+)
+check(hcp(hand_1h_strong) == 16, f"1h_strong HCP = {hcp(hand_1h_strong)} (expect 16)")
+obs = make_obs(hand_1h_strong, dealer=0, player=0)
+bid = opener_b5.bid(obs)
+check(bid == make_bid(1, Suit.H),
+      f"16 HCP + 6H -> 1H not weak 2 (got {bid})")
+
+# Response to weak 2H: 15 HCP + 3 hearts → 4H (game)
+# Axxx S + Qxx H + AKx D + Kxx C = 4+2+7+3 = 16 HCP
+hand_game_raise = _pad_hand(
+    [Card(Rank.ACE, Suit.S), Card(Rank.QUEEN, Suit.H),
+     Card(Rank.ACE, Suit.D), Card(Rank.KING, Suit.D),
+     Card(Rank.KING, Suit.C)],
+    {Suit.S: 4, Suit.H: 3, Suit.D: 3, Suit.C: 3},
+)
+check(hcp(hand_game_raise) >= 14 and hand_shape(hand_game_raise).length(Suit.H) == 3,
+      f"game_raise HCP {hcp(hand_game_raise)} + 3H")
+
+calls_weak_2h = [make_bid(2, Suit.H), PASS]
+obs = make_obs(hand_game_raise, calls=calls_weak_2h, dealer=0, player=2)
+bid = resp.bid(obs)
+check(bid == make_bid(4, Suit.H),
+      f"2H weak + 14+ HCP + 3H -> 4H game (got {bid})")
+
+# Response to weak 2H: 6 HCP + 3 hearts → 3H (law of total tricks, preemptive raise)
+hand_law_raise = _pad_hand(
+    [Card(Rank.JACK, Suit.S), Card(Rank.JACK, Suit.H),
+     Card(Rank.QUEEN, Suit.D)],
+    {Suit.S: 4, Suit.H: 3, Suit.D: 3, Suit.C: 3},
+)
+check(hcp(hand_law_raise) <= 8 and hand_shape(hand_law_raise).length(Suit.H) == 3,
+      f"law_raise HCP {hcp(hand_law_raise)} + 3H")
+obs = make_obs(hand_law_raise, calls=calls_weak_2h, dealer=0, player=2)
+bid = resp.bid(obs)
+check(bid == make_bid(3, Suit.H),
+      f"2H weak + weak + 3H -> 3H law (got {bid})")
+
+# Response to weak 2H: no support, weak → PASS
+hand_no_fit_weak = _pad_hand(
+    [Card(Rank.JACK, Suit.S), Card(Rank.QUEEN, Suit.C)],
+    {Suit.S: 4, Suit.H: 1, Suit.D: 4, Suit.C: 4},
+)
+check(hcp(hand_no_fit_weak) <= 5, f"no_fit_weak HCP = {hcp(hand_no_fit_weak)}")
+obs = make_obs(hand_no_fit_weak, calls=calls_weak_2h, dealer=0, player=2)
+bid = resp.bid(obs)
+check(bid == PASS,
+      f"2H weak + no fit + weak -> PASS (got {bid})")
+
+# Rule of 20: 11 HCP + 6-4 shape → opens 1-level (regression check)
+# AKJxxx S + Qxxx H + xx D + x C = 4+3+1+2+0 = 10 HCP
+# AKJTxx S + AJxx H + xx D + x C = 4+3+1+0 + 4+1 = 13 HCP, already 13
+# Aim: 11 HCP + 6-4: AKxxxx S + Qxxx H + x D + xx C = 4+3+2+0 = 9 HCP
+# AQJxxx S + KQxx H + x D + xx C = 4+2+1+3+2 = 12 HCP
+# AQxxxx S + KJxx H + x D + xx C = 4+2+3+1 = 10 HCP. Close.
+# AKxxxx S + KQxx H + x D + xx C = 4+3+3+2 = 12 HCP.
+# KQxxxx S + AJxx H + x D + xx C = 3+2+4+1 = 10 HCP.
+# KQJxxx S + AJxx H + x D + xx C = 3+2+1+4+1 = 11 HCP. 6-4-1-2. ✓
+hand_rule20 = _pad_hand(
+    [Card(Rank.KING, Suit.S), Card(Rank.QUEEN, Suit.S),
+     Card(Rank.JACK, Suit.S), Card(Rank.ACE, Suit.H),
+     Card(Rank.JACK, Suit.H)],
+    {Suit.S: 6, Suit.H: 4, Suit.D: 1, Suit.C: 2},
+)
+check(hcp(hand_rule20) == 11, f"rule20 HCP = {hcp(hand_rule20)} (expect 11)")
+obs = make_obs(hand_rule20, dealer=0, player=0)
+bid = opener_b5.bid(obs)
+check(bid == make_bid(1, Suit.S),
+      f"11 HCP + 6-4 (rule-of-20) -> 1S (got {bid})")
+
+
 # ── SUMMARY ──────────────────────────────────────────────────────
 section("SUMMARY")
 total = PASS_COUNT + FAIL_COUNT

@@ -825,6 +825,22 @@ class StateMachineBidder:
                     est.known_suits[first.strain] = 5
                 else:
                     est.known_suits[first.strain] = 3
+            elif (first.level == 2
+                  and first.strain in (Suit.D, Suit.H, Suit.S)):
+                # Weak two: 6-card suit, 6-10 HCP
+                est.min_hcp = self.params.weak_two_min_hcp
+                est.max_hcp = self.params.weak_two_max_hcp
+                est.known_suits[first.strain] = 6
+            elif first.level == 3:
+                # 3-level preempt: 7-card suit
+                est.min_hcp = self.params.preempt_3_min_hcp
+                est.max_hcp = self.params.preempt_3_max_hcp
+                est.known_suits[first.strain] = 7
+            elif first.level == 4 and first.strain in (Suit.H, Suit.S):
+                # 4-level major preempt: 8+ card suit
+                est.min_hcp = self.params.preempt_4_min_hcp
+                est.max_hcp = self.params.preempt_4_max_hcp
+                est.known_suits[first.strain] = 8
             elif first.level >= 2:
                 est.min_hcp, est.max_hcp = 6, 18
                 if first.strain in (Suit.H, Suit.S):
@@ -882,34 +898,63 @@ class StateMachineBidder:
         h = hcp(hand)
         shape = hand_shape(hand)
 
-        # Sub-opening
-        if h < self._effective_open_min and not rule_of_20(hand):
-            return PASS
-
         # Strong 2C
         if h >= self.params.open_strong_min:
             b = self._best_valid(2, Suit.C, valid)
             if b:
                 return b
-            # fallback: bid highest available
             return self._open_suit(hand, shape, valid)
 
         # 2NT: 20-21 balanced
-        if self.params.open_2nt_min <= h <= self.params.open_2nt_max and shape.is_balanced:
+        if (self.params.open_2nt_min <= h <= self.params.open_2nt_max
+                and shape.is_balanced):
             b = self._best_valid(2, Suit.NT, valid)
             if b:
                 return b
 
-        # 1NT: 15-17 balanced.  18-19 balanced opens 1-suit and plans
-        # a jump rebid to 2NT, but we stretch to include them here for
-        # simplicity — the rebid logic now handles extras properly.
-        if self.params.open_1nt_min <= h <= self.params.open_1nt_max and shape.is_balanced:
+        # 1NT: 15-17 balanced
+        if (self.params.open_1nt_min <= h <= self.params.open_1nt_max
+                and shape.is_balanced):
             b = self._best_valid(1, Suit.NT, valid)
             if b:
                 return b
 
-        # 1-of-suit
-        return self._open_suit(hand, shape, valid)
+        # 1-of-suit: full opener OR Rule of 20
+        if h >= self._effective_open_min or rule_of_20(hand):
+            return self._open_suit(hand, shape, valid)
+
+        # Sub-opening strength: consider preempts before passing.
+        # 4-level preempt: 8+ card major.
+        if self.params.use_preempts and (
+                self.params.preempt_4_min_hcp <= h
+                <= self.params.preempt_4_max_hcp):
+            for suit in (Suit.S, Suit.H):
+                if shape.length(suit) >= 8:
+                    b = self._best_valid(4, suit, valid)
+                    if b:
+                        return b
+
+        # 3-level preempt: 7-card suit.
+        if self.params.use_preempts and (
+                self.params.preempt_3_min_hcp <= h
+                <= self.params.preempt_3_max_hcp):
+            for suit in (Suit.S, Suit.H, Suit.D, Suit.C):
+                if shape.length(suit) == 7 and suit_quality(hand, suit) >= 2:
+                    b = self._best_valid(3, suit, valid)
+                    if b:
+                        return b
+
+        # Weak 2: 6-card suit in D/H/S (2C reserved for strong).
+        if self.params.use_weak_twos and (
+                self.params.weak_two_min_hcp <= h
+                <= self.params.weak_two_max_hcp):
+            for suit in (Suit.S, Suit.H, Suit.D):
+                if shape.length(suit) == 6 and suit_quality(hand, suit) >= 2:
+                    b = self._best_valid(2, suit, valid)
+                    if b:
+                        return b
+
+        return PASS
 
     def _open_suit(self, hand: List[Card], shape: HandShape,
                    valid: list) -> Bid:
@@ -970,6 +1015,15 @@ class StateMachineBidder:
         # Response to 1-of-suit
         if opening.level == 1:
             return self._respond_to_1_suit(hand, h, shape, opening, valid)
+
+        # Response to weak 2 (2D/2H/2S)
+        if (opening.level == 2
+                and opening.strain in (Suit.D, Suit.H, Suit.S)):
+            return self._respond_to_weak_two(hand, h, shape, opening, valid)
+
+        # Response to 3-level or 4-level preempts
+        if opening.level in (3, 4):
+            return self._respond_to_preempt(hand, h, shape, opening, valid)
 
         return PASS
 
@@ -1049,6 +1103,69 @@ class StateMachineBidder:
         # 2NT: 8+ balanced
         b = self._best_valid(2, Suit.NT, valid)
         return b if b else PASS
+
+    def _respond_to_weak_two(self, hand: List[Card], h: int,
+                              shape: HandShape, opening: Bid,
+                              valid: list) -> Bid:
+        """Respond to partner's 2D/2H/2S weak opening (6-10 HCP, 6-card).
+
+        Law of total tricks: 9 combined trumps = safe at 3-level; 10 = 4.
+        Strong hands with a fit drive to game; without a fit, pass or
+        try 3NT with stoppers.
+        """
+        strain = opening.strain
+        support = suit_length(hand, strain)
+
+        # Strong hand + fit: drive to game when it's a major.
+        if strain in (Suit.H, Suit.S) and support >= 3 and h >= 14:
+            b = self._best_valid(4, strain, valid)
+            if b:
+                return b
+
+        # Law of total tricks: 3-of-suit with 3+ support (even weak values).
+        if support >= 3:
+            b = self._best_valid(3, strain, valid)
+            if b:
+                return b
+
+        # Strong + stoppers: 3NT.
+        if h >= 15 and all_suits_stopped(hand):
+            b = self._best_valid(3, Suit.NT, valid)
+            if b:
+                return b
+
+        # Strong hand with own 5+ suit: force in new suit.
+        if h >= 14:
+            for s in (Suit.S, Suit.H, Suit.D, Suit.C):
+                if s != strain and shape.length(s) >= 5:
+                    b = self._cheapest_in_suit(s, valid)
+                    if b:
+                        return b
+
+        return PASS
+
+    def _respond_to_preempt(self, hand: List[Card], h: int,
+                             shape: HandShape, opening: Bid,
+                             valid: list) -> Bid:
+        """Respond to partner's 3-level or 4-level preempt."""
+        strain = opening.strain
+        support = suit_length(hand, strain)
+
+        # Raise to game in a major with a fit and values.
+        if (strain in (Suit.H, Suit.S) and support >= 2 and h >= 13
+                and opening.level == 3):
+            b = self._best_valid(4, strain, valid)
+            if b:
+                return b
+
+        # 3NT with stoppers over 3-level minor preempt and strong hand.
+        if (opening.level == 3 and strain in (Suit.C, Suit.D)
+                and h >= 14 and all_suits_stopped(hand)):
+            b = self._best_valid(3, Suit.NT, valid)
+            if b:
+                return b
+
+        return PASS
 
     def _respond_to_1_suit(self, hand: List[Card], h: int,
                            shape: HandShape, opening: Bid,

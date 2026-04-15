@@ -120,6 +120,16 @@ class BridgeParams:
     unusual_2nt_min_hcp: int = 5
     unusual_2nt_max_hcp: int = 11
 
+    # ── Preempts & weak openings (Batch 5) ────────────────────────
+    use_weak_twos: bool = True
+    use_preempts: bool = True
+    weak_two_min_hcp: int = 6
+    weak_two_max_hcp: int = 10
+    preempt_3_min_hcp: int = 5
+    preempt_3_max_hcp: int = 10
+    preempt_4_min_hcp: int = 5
+    preempt_4_max_hcp: int = 11
+
     # ── Fit detection ─────────────────────────────────────────────
     fit_min_support_major: int = 3
     fit_min_support_general: int = 4
