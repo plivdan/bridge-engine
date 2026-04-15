@@ -703,6 +703,11 @@ class StateMachineBidder:
                 return (5, fit)
             return (3, Suit.NT)
         if combined >= self.params.inv_combined_min:
+            # With an established major fit, a 3-of-major invite beats
+            # 2NT — it leaves partner with a clearer accept/decline and
+            # keeps us out of NT contracts played through our weakness.
+            if fit in (Suit.H, Suit.S):
+                return (3, fit)
             return (2, Suit.NT)
         if fit is not None:
             return (1, fit)
