@@ -538,6 +538,156 @@ if contract_t:
           f"~26 combined should reach game level (got {contract_t.level})")
 
 
+# ── SLAM MACHINERY (Batch 2) ─────────────────────────────────────
+section("SLAM MACHINERY: RKCB / JACOBY 2NT / SPLINTERS")
+
+from ai.bid_meaning import (
+    decode_rkcb_response, rkcb_response_for, splinter_short_suit,
+    SPLINTER_BIDS,
+)
+
+# Jacoby 2NT: 14 HCP, 4-card heart support, balanced → 2NT over 1H
+hand_j2nt = _pad_hand(
+    [Card(Rank.KING, Suit.S), Card(Rank.ACE, Suit.H),
+     Card(Rank.QUEEN, Suit.H), Card(Rank.KING, Suit.D),
+     Card(Rank.QUEEN, Suit.C)],
+    {Suit.S: 2, Suit.H: 4, Suit.D: 3, Suit.C: 4},
+)
+check(hcp(hand_j2nt) == 14, f"j2nt hand HCP = {hcp(hand_j2nt)} (expect 14)")
+check(hand_shape(hand_j2nt).length(Suit.H) == 4, "j2nt hand has 4 hearts")
+
+calls_1h_open = [make_bid(1, Suit.H), PASS]
+obs = make_obs(hand_j2nt, calls=calls_1h_open, dealer=0, player=2)
+bid = resp.bid(obs)
+check(bid == make_bid(2, Suit.NT),
+      f"1H - ?, 14 HCP + 4H balanced -> 2NT Jacoby (got {bid})")
+
+# Limit raise still fires for 10-12 HCP + 4-card support (below J2NT floor)
+# HAND_RESP_HEARTS from earlier: 10 HCP + 4 hearts → 3H
+# (this is already covered by existing RESPONDING tests — confirm regression-free)
+
+# Splinter: 14 HCP, 4-card spade support, singleton clubs → 4C over 1S
+hand_splinter = _pad_hand(
+    [Card(Rank.KING, Suit.S), Card(Rank.QUEEN, Suit.S),
+     Card(Rank.ACE, Suit.H), Card(Rank.KING, Suit.H),
+     Card(Rank.QUEEN, Suit.D)],
+    {Suit.S: 4, Suit.H: 4, Suit.D: 4, Suit.C: 1},
+)
+check(hcp(hand_splinter) == 14, f"splinter hand HCP = {hcp(hand_splinter)} (expect 14)")
+check(hand_shape(hand_splinter).length(Suit.C) == 1, "splinter hand has singleton club")
+
+calls_1s_open = [make_bid(1, Suit.S), PASS]
+obs = make_obs(hand_splinter, calls=calls_1s_open, dealer=0, player=2)
+bid = resp.bid(obs)
+check(bid == make_bid(4, Suit.C),
+      f"1S - ?, 14 HCP + 4S + singleton C -> 4C splinter (got {bid})")
+
+# Splinter over 1H with singleton spade → 3S (double jump)
+hand_splinter_3s = _pad_hand(
+    [Card(Rank.ACE, Suit.H), Card(Rank.KING, Suit.H),
+     Card(Rank.QUEEN, Suit.D), Card(Rank.KING, Suit.D),
+     Card(Rank.QUEEN, Suit.C)],
+    {Suit.S: 1, Suit.H: 4, Suit.D: 4, Suit.C: 4},
+)
+check(hcp(hand_splinter_3s) == 14, f"splinter_3s HCP = {hcp(hand_splinter_3s)} (expect 14)")
+obs = make_obs(hand_splinter_3s, calls=calls_1h_open, dealer=0, player=2)
+bid = resp.bid(obs)
+check(bid == make_bid(3, Suit.S),
+      f"1H - ?, 14 HCP + 4H + singleton S -> 3S splinter (got {bid})")
+
+# Opener answers Jacoby 2NT with shortness (singleton club) → 3C
+# 16 HCP, 5H, shape 3-5-4-1 (singleton club)
+# AKx S (7) + AQxxx H (6) + Kxx D (3) + x C (0) = 16
+opener_j2nt_short = _pad_hand(
+    [Card(Rank.ACE, Suit.S), Card(Rank.KING, Suit.S),
+     Card(Rank.ACE, Suit.H), Card(Rank.QUEEN, Suit.H),
+     Card(Rank.KING, Suit.D)],
+    {Suit.S: 3, Suit.H: 5, Suit.D: 4, Suit.C: 1},
+)
+check(hcp(opener_j2nt_short) == 16, f"opener_j2nt_short HCP = {hcp(opener_j2nt_short)} (expect 16)")
+calls_j2nt_reply = [make_bid(1, Suit.H), PASS, make_bid(2, Suit.NT), PASS]
+obs = make_obs(opener_j2nt_short, calls=calls_j2nt_reply, dealer=0, player=0)
+bid = opener.bid(obs)
+check(bid == make_bid(3, Suit.C),
+      f"1H-P-2NT-P, opener w/ singleton C -> 3C shortness (got {bid})")
+
+# Opener answers Jacoby 2NT with min balanced → 3NT
+# 13 HCP, 5H, balanced 3-5-3-2 (no shortness)
+# Qxx S (2) + AKJxx H (8) + Kxx D (3) + xx C (0) = 13
+opener_j2nt_min = _pad_hand(
+    [Card(Rank.QUEEN, Suit.S), Card(Rank.ACE, Suit.H),
+     Card(Rank.KING, Suit.H), Card(Rank.JACK, Suit.H),
+     Card(Rank.KING, Suit.D)],
+    {Suit.S: 3, Suit.H: 5, Suit.D: 3, Suit.C: 2},
+)
+check(hcp(opener_j2nt_min) == 13, f"opener_j2nt_min HCP = {hcp(opener_j2nt_min)} (expect 13)")
+obs = make_obs(opener_j2nt_min, calls=calls_j2nt_reply, dealer=0, player=0)
+bid = opener.bid(obs)
+check(bid == make_bid(3, Suit.NT),
+      f"1H-P-2NT-P, opener 13 HCP balanced -> 3NT (got {bid})")
+
+# RKCB response encoding (direct helper test)
+check(rkcb_response_for(0, False) == Suit.D, "0 keycards -> 5D")
+check(rkcb_response_for(1, False) == Suit.C, "1 keycard -> 5C")
+check(rkcb_response_for(2, False) == Suit.H, "2 keycards no queen -> 5H")
+check(rkcb_response_for(2, True) == Suit.S, "2 keycards + queen -> 5S")
+check(rkcb_response_for(3, False) == Suit.D, "3 keycards -> 5D")
+check(rkcb_response_for(4, False) == Suit.C, "4 keycards -> 5C")
+
+# RKCB decoding
+r = decode_rkcb_response(make_bid(5, Suit.C))
+check(r['keycards'] == (1, 4), "5C decodes to 1-or-4 keycards")
+r = decode_rkcb_response(make_bid(5, Suit.H))
+check(r['keycards'] == 2 and r['has_queen'] is False,
+      "5H decodes to 2 keycards without queen")
+r = decode_rkcb_response(make_bid(5, Suit.S))
+check(r['keycards'] == 2 and r['has_queen'] is True,
+      "5S decodes to 2 keycards with queen")
+
+# Splinter table
+check(splinter_short_suit(Suit.H, make_bid(4, Suit.C)) == Suit.C,
+      "1H-4C is splinter in clubs")
+check(splinter_short_suit(Suit.H, make_bid(3, Suit.S)) == Suit.S,
+      "1H-3S is splinter in spades")
+check(splinter_short_suit(Suit.S, make_bid(4, Suit.H)) == Suit.H,
+      "1S-4H is splinter in hearts")
+check(splinter_short_suit(Suit.S, make_bid(3, Suit.H)) is None,
+      "1S-3H is NOT a splinter (single jump, not double)")
+check(splinter_short_suit(Suit.H, make_bid(2, Suit.C)) is None,
+      "1H-2C is natural, not splinter")
+
+# End-to-end: RKCB response from responder. Construct auction where partner
+# opened 1H, I raised to 3H, partner bid 4NT. I answer with my keycards.
+# Hand: Ax S, KQxxx H, Kxx D, xxx C. Aces=1 (S), trump K=yes, queen=yes.
+# Keycards = 2 + has queen = respond 5S.
+hand_rkcb_2q = _pad_hand(
+    [Card(Rank.ACE, Suit.S), Card(Rank.KING, Suit.H),
+     Card(Rank.QUEEN, Suit.H), Card(Rank.KING, Suit.D)],
+    {Suit.S: 2, Suit.H: 5, Suit.D: 3, Suit.C: 3},
+)
+# Dealer=0 (partner), auction: 1H - P - 3H - P - 4NT - P - ? (me, seat 2)
+calls_4nt = [
+    make_bid(1, Suit.H), PASS, make_bid(3, Suit.H), PASS,
+    make_bid(4, Suit.NT), PASS,
+]
+obs = make_obs(hand_rkcb_2q, calls=calls_4nt, dealer=0, player=2)
+bid = resp.bid(obs)
+check(bid == make_bid(5, Suit.S),
+      f"4NT by partner, 2 keycards + trump queen -> 5S (got {bid})")
+
+# Same auction shape but responder has 1 keycard → 5C
+# Ax S, Qxxxx H (no K, has Q), xxx D, xxx C. 1 ace, no trump K: 1 keycard.
+hand_rkcb_1k = _pad_hand(
+    [Card(Rank.ACE, Suit.S), Card(Rank.QUEEN, Suit.H),
+     Card(Rank.JACK, Suit.H)],
+    {Suit.S: 2, Suit.H: 5, Suit.D: 3, Suit.C: 3},
+)
+obs = make_obs(hand_rkcb_1k, calls=calls_4nt, dealer=0, player=2)
+bid = resp.bid(obs)
+check(bid == make_bid(5, Suit.C),
+      f"4NT by partner, 1 keycard -> 5C (got {bid})")
+
+
 # ── SUMMARY ──────────────────────────────────────────────────────
 section("SUMMARY")
 total = PASS_COUNT + FAIL_COUNT

@@ -120,3 +120,63 @@ def gerber_aces_from_response(call: Bid) -> Optional[int]:
     if call.strain == Suit.NT:
         return 3
     return None
+
+
+# ----------------------------------------------------------------------
+# Slam machinery: Roman Key Card Blackwood, Jacoby 2NT, splinters
+# ----------------------------------------------------------------------
+
+# Splinter bids: (opener_strain, short_suit) -> (level, strain_to_bid)
+SPLINTER_BIDS = {
+    (Suit.H, Suit.C): (4, Suit.C),
+    (Suit.H, Suit.D): (4, Suit.D),
+    (Suit.H, Suit.S): (3, Suit.S),
+    (Suit.S, Suit.C): (4, Suit.C),
+    (Suit.S, Suit.D): (4, Suit.D),
+    (Suit.S, Suit.H): (4, Suit.H),
+}
+
+
+def splinter_short_suit(opening_strain: Suit, call: Bid) -> Optional[Suit]:
+    """If `call` is the splinter bid opposite a 1-of-major opening in
+    `opening_strain`, return the short suit it names. Else None."""
+    if call is None or call.special:
+        return None
+    for (op_strain, short_suit), (lv, st) in SPLINTER_BIDS.items():
+        if (op_strain == opening_strain and call.level == lv
+                and call.strain == st):
+            return short_suit
+    return None
+
+
+def decode_rkcb_response(call: Bid) -> Optional[dict]:
+    """Decode a 5-level RKC Blackwood (1430) response.
+
+    Returns dict with keys:
+        keycards: int or tuple[int, ...]  (1 or 4 means ambiguous tuple)
+        has_queen: Optional[bool]         (None when response doesn't say)
+    """
+    if call is None or call.special or call.level != 5:
+        return None
+    if call.strain == Suit.C:
+        return {'keycards': (1, 4), 'has_queen': None}
+    if call.strain == Suit.D:
+        return {'keycards': (0, 3), 'has_queen': None}
+    if call.strain == Suit.H:
+        return {'keycards': 2, 'has_queen': False}
+    if call.strain == Suit.S:
+        return {'keycards': 2, 'has_queen': True}
+    return None
+
+
+def rkcb_response_for(keycards: int, has_queen: bool) -> Suit:
+    """Return the RKCB (1430) response strain for the given keycards + queen."""
+    if keycards in (1, 4):
+        return Suit.C
+    if keycards in (0, 3):
+        return Suit.D
+    if keycards == 2 and not has_queen:
+        return Suit.H
+    if keycards == 2 and has_queen:
+        return Suit.S
+    return Suit.C

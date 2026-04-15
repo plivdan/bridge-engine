@@ -95,6 +95,14 @@ class BridgeParams:
     transfer_super_accept_min_trumps: int = 4
     gerber_min_hcp: int = 16
 
+    # ── Slam machinery (Batch 2) ──────────────────────────────────
+    use_rkcb: bool = True                # Roman Key Card Blackwood 1430
+    use_jacoby_2nt: bool = True          # 1M-2NT game-forcing raise
+    jacoby_2nt_min_hcp: int = 13
+    use_splinters: bool = True           # double-jump shortness raise
+    splinter_min_hcp: int = 13
+    splinter_max_hcp: int = 15
+
     # ── Fit detection ─────────────────────────────────────────────
     fit_min_support_major: int = 3
     fit_min_support_general: int = 4

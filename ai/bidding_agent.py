@@ -28,6 +28,9 @@ from .bid_meaning import (
     interpret_response_to_1nt,
     gerber_ace_response,
     gerber_aces_from_response,
+    splinter_short_suit,
+    decode_rkcb_response,
+    rkcb_response_for,
 )
 from .trace import DecisionTrace
 
@@ -112,23 +115,46 @@ class StateMachineBidder:
         my_first = my_bids[0]
         after_1nt = (my_first.level == 1 and my_first.strain == Suit.NT)
         after_2nt = (my_first.level == 2 and my_first.strain == Suit.NT)
-        if not (after_1nt or after_2nt):
+        after_1_major = (my_first.level == 1
+                         and my_first.strain in (Suit.H, Suit.S))
+
+        if not (after_1nt or after_2nt or after_1_major):
             return partner_bids
 
         out: List[Bid] = []
         for i, b in enumerate(partner_bids):
-            if i != 0:
+            if i != 0 or b.special:
                 out.append(b)
                 continue
             if after_1nt:
                 meaning = interpret_response_to_1nt(b, self.params)
-            else:
-                meaning = self._interpret_response_to_2nt(b)
-            if meaning.is_transfer and meaning.shows_suit is not None:
-                out.append(make_bid(b.level, meaning.shows_suit))
+                if meaning.is_transfer and meaning.shows_suit is not None:
+                    out.append(make_bid(b.level, meaning.shows_suit))
+                    continue
+                if meaning.convention in ('stayman', 'gerber', 'quantitative'):
+                    continue
+                out.append(b)
                 continue
-            if meaning.convention in ('stayman', 'gerber', 'quantitative'):
-                continue  # artificial; drop so fit detection doesn't see it
+            if after_2nt:
+                meaning = self._interpret_response_to_2nt(b)
+                if meaning.is_transfer and meaning.shows_suit is not None:
+                    out.append(make_bid(b.level, meaning.shows_suit))
+                    continue
+                if meaning.convention in ('stayman', 'gerber', 'quantitative'):
+                    continue
+                out.append(b)
+                continue
+            # after_1_major: decode Jacoby 2NT and splinters
+            # Both show 4+ support in our major; register a fit-showing
+            # synthetic bid and swallow the real call.
+            if (self.params.use_jacoby_2nt
+                    and b.level == 2 and b.strain == Suit.NT):
+                out.append(make_bid(2, my_first.strain))
+                continue
+            if (self.params.use_splinters
+                    and splinter_short_suit(my_first.strain, b) is not None):
+                out.append(make_bid(2, my_first.strain))
+                continue
             out.append(b)
         return out
 
@@ -221,14 +247,90 @@ class StateMachineBidder:
 
         return None
 
+    # ------------------------------------------------------------------
+    # opener's answer to Jacoby 2NT and splinters (Batch 2)
+    # ------------------------------------------------------------------
+
+    def _respond_to_jacoby_2nt(self, hand: List[Card], h: int,
+                                shape: HandShape, major: Suit,
+                                valid: list) -> Optional[Bid]:
+        """Opener's rebid after 1M-2NT Jacoby.
+
+        3 of a new suit = singleton/void there (up-the-line).
+        3-of-major     = extras (15+), no shortness, slam interest.
+        3NT            = minimum balanced (12-14).
+        4-of-major     = minimum unbalanced.
+        """
+        for s in (Suit.C, Suit.D, Suit.H, Suit.S):
+            if s == major:
+                continue
+            if shape.length(s) <= 1:
+                b = self._best_valid(3, s, valid)
+                if b:
+                    return b
+        if h >= 15:
+            b = self._best_valid(3, major, valid)
+            if b:
+                return b
+        if h <= 14 and shape.is_balanced:
+            b = self._best_valid(3, Suit.NT, valid)
+            if b:
+                return b
+        b = self._best_valid(4, major, valid)
+        return b if b else None
+
+    def _respond_to_splinter(self, hand: List[Card], h: int,
+                              shape: HandShape, major: Suit,
+                              short_suit: Suit, valid: list) -> Optional[Bid]:
+        """Opener's rebid after partner's splinter.
+
+        Accounts for wasted honors facing shortness: KQJ opposite a singleton
+        is worthless, so the effective combined strength can be well below
+        raw HCP. Launches RKCB when adjusted strength reaches slam zone,
+        else signs off in game.
+        """
+        honor_points = {Rank.ACE: 4, Rank.KING: 3,
+                        Rank.QUEEN: 2, Rank.JACK: 1}
+        wasted = sum(honor_points.get(c.rank, 0)
+                     for c in hand if c.suit == short_suit)
+        effective = h - wasted
+        partner_mid = (self.params.splinter_min_hcp
+                       + self.params.splinter_max_hcp) // 2
+        if effective + partner_mid >= 31:
+            b = self._best_valid(4, Suit.NT, valid)
+            if b:
+                return b
+        b = self._best_valid(4, major, valid)
+        return b if b else None
+
+    # ------------------------------------------------------------------
+    # Roman Key Card Blackwood helpers (Batch 2)
+    # ------------------------------------------------------------------
+
+    def _count_keycards(self, hand: List[Card],
+                        trump_suit: Optional[Suit]) -> int:
+        aces = sum(1 for c in hand if c.rank == Rank.ACE)
+        if trump_suit is None or trump_suit == Suit.NT:
+            return aces
+        has_trump_k = any(c.suit == trump_suit and c.rank == Rank.KING
+                          for c in hand)
+        return aces + (1 if has_trump_k else 0)
+
+    def _has_trump_queen(self, hand: List[Card],
+                          trump_suit: Optional[Suit]) -> bool:
+        if trump_suit is None or trump_suit == Suit.NT:
+            return False
+        return any(c.suit == trump_suit and c.rank == Rank.QUEEN
+                   for c in hand)
+
     def _awaiting_convention_completion(self, my_bids: list,
                                          partner_bids: list) -> bool:
-        """True if the next bid should complete an NT-response convention.
+        """True if the next bid should complete a convention in flight.
 
-        Either I opened NT and partner just responded with a convention,
-        or partner opened NT, I responded with a convention, and partner
-        answered — in both cases we should continue the conventional auction
-        rather than jumping into Blackwood.
+        Any of: I opened NT and partner responded conventionally; partner
+        opened NT and I responded conventionally; I opened 1M and partner
+        replied with Jacoby 2NT or a splinter. In all these cases the
+        conventional auction must unfold before we jump to slam.
         """
         if not my_bids or not partner_bids:
             return False
@@ -255,6 +357,16 @@ class StateMachineBidder:
                 meaning = self._interpret_response_to_2nt(my_first)
             if (meaning.is_transfer
                     or meaning.convention in ('stayman', 'gerber')):
+                return True
+        # I opened 1M, partner's only bid is Jacoby 2NT or a splinter
+        if (not my_first.special and my_first.level == 1
+                and my_first.strain in (Suit.H, Suit.S)
+                and len(partner_bids) == 1 and not p_first.special):
+            if (self.params.use_jacoby_2nt
+                    and p_first.level == 2 and p_first.strain == Suit.NT):
+                return True
+            if (self.params.use_splinters
+                    and splinter_short_suit(my_first.strain, p_first) is not None):
                 return True
         return False
 
@@ -283,9 +395,16 @@ class StateMachineBidder:
             # For slam, use min + 1/3 of range (conservative)
             partner_est = est.min_hcp + int((est.max_hcp - est.min_hcp) * self.params.partner_est_fraction)
             combined = tp + partner_est
-            # Suppress slam-jump if partner's first response is an NT-
-            # response convention not yet refined by a follow-up: partner
-            # could be 0 HCP (weak transfer) and we must complete first.
+            # Force slam-phase whenever a 4NT ask is already on the table
+            # so we route RKCB decoding / response through _bid_slam.
+            already_4nt = any(
+                not c.special and c.level == 4 and c.strain == Suit.NT
+                for c in my + partner)
+            if already_4nt:
+                return BidPhase.SLAM_INVESTIGATION
+            # Otherwise suppress the slam-jump if we're mid-convention:
+            # partner could be 0 HCP (weak transfer) and we must complete
+            # the conventional auction before exploring slam.
             suppress_slam = self._awaiting_convention_completion(my, partner)
             if (not suppress_slam
                     and combined >= self.params.slam_small_min
@@ -458,6 +577,27 @@ class StateMachineBidder:
                             if not pb.special and pb.strain == my_strain:
                                 est.known_suits[my_strain] = max(
                                     est.known_suits.get(my_strain, 0), 3)
+                        return est
+
+            # Jacoby 2NT / splinter: major opening plus conventional response.
+            if (my_bids_here and not my_bids_here[0].special
+                    and my_bids_here[0].level == 1
+                    and my_bids_here[0].strain in (Suit.H, Suit.S)):
+                major = my_bids_here[0].strain
+                if (self.params.use_jacoby_2nt
+                        and not first.special
+                        and first.level == 2 and first.strain == Suit.NT):
+                    est.min_hcp = self.params.jacoby_2nt_min_hcp
+                    est.max_hcp = 40
+                    est.known_suits[major] = 4
+                    est.is_balanced = True
+                    return est
+                if self.params.use_splinters and not first.special:
+                    short = splinter_short_suit(major, first)
+                    if short is not None:
+                        est.min_hcp = self.params.splinter_min_hcp
+                        est.max_hcp = self.params.splinter_max_hcp
+                        est.known_suits[major] = 4
                         return est
 
             if first.level == 1 and first.strain == Suit.NT:
@@ -755,6 +895,37 @@ class StateMachineBidder:
         # Major fit: raise partner's suit (not opponent's!)
         if strain in (Suit.H, Suit.S) and strain not in opp_suits:
             support = suit_length(hand, strain)
+
+            # Splinter: 13-15 HCP, 4+ support, singleton/void in a side suit.
+            # Takes priority over Jacoby 2NT because it pinpoints shortness.
+            if (self.params.use_splinters and support >= 4
+                    and self.params.splinter_min_hcp <= h
+                    <= self.params.splinter_max_hcp):
+                short_suit = None
+                for s in (Suit.C, Suit.D, Suit.H, Suit.S):
+                    if s != strain and shape.length(s) <= 1:
+                        short_suit = s
+                        break
+                if short_suit is not None:
+                    from .bid_meaning import SPLINTER_BIDS
+                    key = (strain, short_suit)
+                    if key in SPLINTER_BIDS:
+                        lv, st = SPLINTER_BIDS[key]
+                        b = self._best_valid(lv, st, valid)
+                        if b:
+                            return b
+
+            # Jacoby 2NT: 4+ support, 13+ HCP, no shortness (balanced-ish).
+            if (self.params.use_jacoby_2nt and support >= 4
+                    and h >= self.params.jacoby_2nt_min_hcp):
+                has_shortness = any(
+                    shape.length(s) <= 1
+                    for s in (Suit.C, Suit.D, Suit.H, Suit.S) if s != strain)
+                if not has_shortness:
+                    b = self._best_valid(2, Suit.NT, valid)
+                    if b:
+                        return b
+
             if support >= 4 and h >= self.params.respond_raise_game_min:
                 b = self._best_valid(4, strain, valid)
                 if b:
@@ -874,6 +1045,27 @@ class StateMachineBidder:
                     hand, h, shape, meaning, partner_resp, valid)
                 if result is not None:
                     return result
+
+        # Jacoby 2NT / splinter handling after my 1-of-major opening.
+        if (not my_opening.special and len(partner_bids) == 1
+                and not partner_resp.special
+                and my_opening.level == 1
+                and my_opening.strain in (Suit.H, Suit.S)):
+            major = my_opening.strain
+            if (self.params.use_jacoby_2nt
+                    and partner_resp.level == 2
+                    and partner_resp.strain == Suit.NT):
+                result = self._respond_to_jacoby_2nt(
+                    hand, h, shape, major, valid)
+                if result is not None:
+                    return result
+            if self.params.use_splinters:
+                short = splinter_short_suit(major, partner_resp)
+                if short is not None:
+                    result = self._respond_to_splinter(
+                        hand, h, shape, major, short, valid)
+                    if result is not None:
+                        return result
 
         fit = self._detected_fit(my_bids, partner_bids, hand)
         est = self._estimate_partner(partner_bids, calls, dealer)
@@ -1337,52 +1529,94 @@ class StateMachineBidder:
         partner_est = est.min_hcp + int((est.max_hcp - est.min_hcp) * self.params.partner_est_fraction)
         combined = tp + partner_est
 
-        # Check if we already bid 4NT (Blackwood) — partner should respond
+        # Check if we already bid 4NT — partner should respond
         my_calls_all = [calls[i] for i in range(len(calls))
                         if (dealer + i) % 4 == self.seat]
         partner_calls_all = self._partner_calls(calls, dealer)
-        i_asked_blackwood = any(
+        i_asked_4nt = any(
             c.level == 4 and c.strain == Suit.NT and not c.special
             for c in my_calls_all)
-        partner_asked_blackwood = any(
+        partner_asked_4nt = any(
             c.level == 4 and c.strain == Suit.NT and not c.special
             for c in partner_calls_all)
 
-        # If partner responded to our Blackwood
-        if i_asked_blackwood and partner_bids:
-            last_partner = partner_calls_all[-1] if partner_calls_all else None
-            if last_partner and last_partner.level == 5 and not last_partner.special:
-                # Count aces from response
-                partner_aces = {Suit.C: 0, Suit.D: 1, Suit.H: 2,
-                                Suit.S: 3, Suit.NT: 4}.get(
-                    last_partner.strain, 0)
-                my_aces = sum(1 for c in hand if c.rank == Rank.ACE)
-                total_aces = partner_aces + my_aces
+        trump_suit = fit if fit is not None else Suit.NT
 
-                strain = fit if fit else Suit.NT
-                # Grand slam: need all 4 aces
-                if combined >= self.params.slam_grand_min and total_aces == 4:
-                    b = self._best_valid(7, strain, valid)
+        # If partner responded to our 4NT
+        if i_asked_4nt:
+            last_partner = None
+            for c in reversed(partner_calls_all):
+                if not c.special and c.level == 5:
+                    last_partner = c
+                    break
+            if last_partner is not None:
+                strain = trump_suit
+                if self.params.use_rkcb:
+                    my_keycards = self._count_keycards(hand, trump_suit)
+                    resp = decode_rkcb_response(last_partner)
+                    if resp is not None:
+                        partner_keycards = resp['keycards']
+                        # Disambiguate 5C (1 or 4) and 5D (0 or 3): pick the
+                        # value consistent with 5 keycards total; otherwise
+                        # the lower one (partner usually has the smaller).
+                        if isinstance(partner_keycards, tuple):
+                            candidates = [k for k in partner_keycards
+                                          if my_keycards + k <= 5]
+                            partner_keycards = (
+                                candidates[0] if candidates else min(partner_keycards))
+                        total = my_keycards + partner_keycards
+                        # Missing 2+ keycards: sign off at 5 of trump
+                        if 5 - total >= 2:
+                            b = self._best_valid(5, strain, valid)
+                            if b:
+                                return b
+                        # All keycards + grand-slam strength: bid 7
+                        if total == 5 and combined >= self.params.slam_grand_min:
+                            b = self._best_valid(7, strain, valid)
+                            if b:
+                                return b
+                        # Small slam
+                        b = self._best_valid(6, strain, valid)
+                        if b:
+                            return b
+                        b = self._best_valid(5, strain, valid)
+                        if b:
+                            return b
+                else:
+                    # Legacy plain Blackwood fallback
+                    partner_aces = {Suit.C: 0, Suit.D: 1, Suit.H: 2,
+                                    Suit.S: 3, Suit.NT: 4}.get(
+                        last_partner.strain, 0)
+                    my_aces = sum(1 for c in hand if c.rank == Rank.ACE)
+                    total_aces = partner_aces + my_aces
+                    if combined >= self.params.slam_grand_min and total_aces == 4:
+                        b = self._best_valid(7, strain, valid)
+                        if b:
+                            return b
+                    if total_aces >= 3:
+                        b = self._best_valid(6, strain, valid)
+                        if b:
+                            return b
+                    b = self._best_valid(5, strain, valid)
                     if b:
                         return b
-                # Small slam: need at least 3 aces
-                if total_aces >= 3:
-                    b = self._best_valid(6, strain, valid)
-                    if b:
-                        return b
-                # missing aces → sign off at 5
-                b = self._best_valid(5, strain, valid)
+
+        # If partner asked 4NT, respond
+        if partner_asked_4nt:
+            if self.params.use_rkcb:
+                my_kc = self._count_keycards(hand, trump_suit)
+                has_q = self._has_trump_queen(hand, trump_suit)
+                resp_strain = rkcb_response_for(my_kc, has_q)
+                b = self._best_valid(5, resp_strain, valid)
                 if b:
                     return b
-
-        # If partner asked Blackwood, respond with ace count
-        if partner_asked_blackwood:
-            my_aces = sum(1 for c in hand if c.rank == Rank.ACE)
-            responses = {0: Suit.C, 1: Suit.D, 2: Suit.H, 3: Suit.S, 4: Suit.NT}
-            resp_strain = responses[my_aces]
-            b = self._best_valid(5, resp_strain, valid)
-            if b:
-                return b
+            else:
+                my_aces = sum(1 for c in hand if c.rank == Rank.ACE)
+                responses = {0: Suit.C, 1: Suit.D, 2: Suit.H, 3: Suit.S, 4: Suit.NT}
+                resp_strain = responses[my_aces]
+                b = self._best_valid(5, resp_strain, valid)
+                if b:
+                    return b
 
         # Only investigate slam with a fit and enough quick tricks
         my_qt = quick_tricks(hand)
