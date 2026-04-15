@@ -317,6 +317,29 @@ class StateMachineBidder:
                 return c
         return None
 
+    def _i_am_passed_hand(self, calls: list, dealer: int) -> bool:
+        """True if I already passed in this auction before partner opened.
+
+        A passed hand means I had the chance to open and declined — used
+        to trigger conventions like Drury.
+        """
+        for i, c in enumerate(calls):
+            if (dealer + i) % 4 == self.seat:
+                if c == PASS:
+                    return True
+                return False  # any non-pass call means not a passed hand
+        return False
+
+    def _i_am_passed_hand_for_partner(self, calls: list, dealer: int) -> bool:
+        """True if partner is a passed hand (passed before their first bid)."""
+        partner_seat = (self.seat + 2) % 4
+        for i, c in enumerate(calls):
+            if (dealer + i) % 4 == partner_seat:
+                if c == PASS:
+                    return True
+                return False
+        return False
+
     def _try_negative_double(self, hand: List[Card], h: int,
                               shape: HandShape, opening: Bid,
                               valid: list) -> Optional[Bid]:
@@ -774,6 +797,38 @@ class StateMachineBidder:
                         est.known_suits[major] = 4
                         return est
 
+                # Drury: partner is passed-hand responder + 2C over my 1M
+                # = limit raise, 10-11 HCP, 3+ support.
+                if (self.params.use_drury
+                        and self._i_am_passed_hand_for_partner(
+                            calls, dealer)
+                        and not first.special
+                        and first.level == 2 and first.strain == Suit.C):
+                    est.min_hcp = self.params.drury_min_hcp
+                    est.max_hcp = self.params.drury_max_hcp
+                    est.known_suits[major] = 3
+                    return est
+
+            # Inverted minors: my 1C or 1D opening, partner raises 2m/3m.
+            if (my_bids_here and not my_bids_here[0].special
+                    and my_bids_here[0].level == 1
+                    and my_bids_here[0].strain in (Suit.C, Suit.D)
+                    and self.params.use_inverted_minors
+                    and not first.special):
+                minor = my_bids_here[0].strain
+                if first.level == 2 and first.strain == minor:
+                    # Strong inverted
+                    est.min_hcp = self.params.inverted_strong_min_hcp
+                    est.max_hcp = 40
+                    est.known_suits[minor] = 5
+                    return est
+                if first.level == 3 and first.strain == minor:
+                    # Weak inverted
+                    est.min_hcp = self.params.inverted_weak_min_hcp
+                    est.max_hcp = self.params.inverted_weak_max_hcp
+                    est.known_suits[minor] = 5
+                    return est
+
             if first.level == 1 and first.strain == Suit.NT:
                 est.min_hcp, est.max_hcp = 6, 10  # 1NT response
                 est.is_balanced = True
@@ -1191,6 +1246,21 @@ class StateMachineBidder:
         if neg_x is not None:
             return neg_x
 
+        # Drury: passed-hand 2C shows a limit raise in partner's major with
+        # 3+ support. Fires before the direct 3M limit raise because at the
+        # 3-level we'd be overcommitting opposite a light passed-hand opening.
+        if (self.params.use_drury
+                and strain in (Suit.H, Suit.S)
+                and strain not in opp_suits
+                and self._i_am_passed_hand(obs_calls,
+                                           getattr(self, '_current_dealer', 0))
+                and self.params.drury_min_hcp <= h
+                <= self.params.drury_max_hcp
+                and suit_length(hand, strain) >= 3):
+            b = self._best_valid(2, Suit.C, valid)
+            if b and Suit.C not in opp_suits:
+                return b
+
         # Major fit: raise partner's suit (not opponent's!)
         if strain in (Suit.H, Suit.S) and strain not in opp_suits:
             support = suit_length(hand, strain)
@@ -1244,6 +1314,30 @@ class StateMachineBidder:
                 b = self._cheapest_in_suit(suit, valid)
                 if b and b.level == 1:
                     return b
+
+        # Inverted minors: after 1C or 1D opening with 5+ support and no
+        # biddable 4-card major, 2m = strong (11+ HCP, forcing) and 3m =
+        # weak (5-9 HCP, preemptive). Inverts the natural meanings.
+        if (self.params.use_inverted_minors
+                and strain in (Suit.C, Suit.D)
+                and strain not in opp_suits
+                and suit_length(hand, strain) >= 5):
+            # Skip if we could have bid a 4-card major at the 1-level
+            has_1_level_major = any(
+                shape.length(s) >= 4 and s > strain and s not in opp_suits
+                for s in (Suit.H, Suit.S))
+            if not has_1_level_major:
+                if h >= self.params.inverted_strong_min_hcp:
+                    b = self._best_valid(2, strain, valid)
+                    if b:
+                        return b
+                elif (self.params.inverted_weak_min_hcp <= h
+                        <= self.params.inverted_weak_max_hcp
+                        and shape.length(Suit.H) < 4
+                        and shape.length(Suit.S) < 4):
+                    b = self._best_valid(3, strain, valid)
+                    if b:
+                        return b
 
         # 1NT response (6-10, no fit, no new suit at 1)
         if self.params.respond_min_hcp <= h <= self.params.respond_raise_limit_min:

@@ -130,6 +130,15 @@ class BridgeParams:
     preempt_4_min_hcp: int = 5
     preempt_4_max_hcp: int = 11
 
+    # ── Minor raises & gadgets (Batch 6) ──────────────────────────
+    use_inverted_minors: bool = True
+    use_drury: bool = True
+    inverted_strong_min_hcp: int = 11
+    inverted_weak_min_hcp: int = 5
+    inverted_weak_max_hcp: int = 9
+    drury_min_hcp: int = 10
+    drury_max_hcp: int = 11
+
     # ── Fit detection ─────────────────────────────────────────────
     fit_min_support_major: int = 3
     fit_min_support_general: int = 4

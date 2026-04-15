@@ -1086,6 +1086,101 @@ check(bid == make_bid(1, Suit.S),
       f"11 HCP + 6-4 (rule-of-20) -> 1S (got {bid})")
 
 
+# ── MINOR RAISES & GADGETS (Batch 6) ─────────────────────────────
+section("MINOR RAISES & GADGETS: INVERTED MINORS / DRURY")
+
+# Inverted minor strong: partner 1C, I have 12 HCP + 5 clubs + no 4-card
+# major → 2C forcing.
+# Kxx S (3) + Qxx H (2) + Kxx D (3) + AQxxx C (6) = 14... adjust.
+# xx S (0) + xxx H (0) + Kxx D (3) + AQxxxxx C wait need exactly 5 C.
+# Kxx S + Qxx H + Kx D + AJxxx C = 3+2+3+5 = 13 HCP, 3-3-2-5 (no 4-card major)
+hand_inv_strong = _pad_hand(
+    [Card(Rank.KING, Suit.S), Card(Rank.QUEEN, Suit.H),
+     Card(Rank.KING, Suit.D), Card(Rank.ACE, Suit.C),
+     Card(Rank.JACK, Suit.C)],
+    {Suit.S: 3, Suit.H: 3, Suit.D: 2, Suit.C: 5},
+)
+check(hcp(hand_inv_strong) >= 11, f"inv_strong HCP = {hcp(hand_inv_strong)}")
+check(hand_shape(hand_inv_strong).length(Suit.C) == 5, "inv_strong has 5 clubs")
+check(hand_shape(hand_inv_strong).length(Suit.H) < 4
+      and hand_shape(hand_inv_strong).length(Suit.S) < 4,
+      "inv_strong has no 4-card major")
+
+calls_1c = [make_bid(1, Suit.C), PASS]
+obs = make_obs(hand_inv_strong, calls=calls_1c, dealer=0, player=2)
+bid = resp.bid(obs)
+check(bid == make_bid(2, Suit.C),
+      f"1C-?, 13 HCP + 5C + no major -> 2C strong inverted (got {bid})")
+
+# Inverted minor weak: 7 HCP + 5 clubs, no major → 3C preemptive
+# xxx S + xxx H + Qx D + KJxxx C = 0+0+2+4 = 6 HCP
+hand_inv_weak = _pad_hand(
+    [Card(Rank.QUEEN, Suit.D), Card(Rank.KING, Suit.C),
+     Card(Rank.JACK, Suit.C)],
+    {Suit.S: 3, Suit.H: 3, Suit.D: 2, Suit.C: 5},
+)
+check(5 <= hcp(hand_inv_weak) <= 9,
+      f"inv_weak HCP = {hcp(hand_inv_weak)} (expect 5-9)")
+obs = make_obs(hand_inv_weak, calls=calls_1c, dealer=0, player=2)
+bid = resp.bid(obs)
+check(bid == make_bid(3, Suit.C),
+      f"1C-?, ~6 HCP + 5C + no major -> 3C weak inverted (got {bid})")
+
+# With a 4-card major, bid the major (not inverted)
+# Kxx S + AJxx H + Qx D + KJxx C = 3+5+2+4 = 14 HCP, 4-card hearts
+hand_4h_bid = _pad_hand(
+    [Card(Rank.KING, Suit.S), Card(Rank.ACE, Suit.H),
+     Card(Rank.JACK, Suit.H), Card(Rank.QUEEN, Suit.D),
+     Card(Rank.KING, Suit.C), Card(Rank.JACK, Suit.C)],
+    {Suit.S: 3, Suit.H: 4, Suit.D: 2, Suit.C: 4},
+)
+check(hand_shape(hand_4h_bid).length(Suit.H) == 4, "4h_bid has 4 hearts")
+obs = make_obs(hand_4h_bid, calls=calls_1c, dealer=0, player=2)
+bid = resp.bid(obs)
+check(bid == make_bid(1, Suit.H),
+      f"1C-?, 14 HCP + 4H + 4C -> 1H natural, not inverted (got {bid})")
+
+# Drury: passed hand opens 1H, I have 10 HCP + 3 hearts → 2C Drury
+# Partner (seat 0 N=dealer) passes, E passes, I (S) pass, W(partner) opens 1H...
+# Wait, dealer=0 and I'm seat 2. For me to be a passed hand, I need to bid
+# FIRST somehow. In a standard auction dealer is first. If dealer=0 (N),
+# E=1, S=2, W=3. For me (S=seat 2) to pass first, calls need: N's call
+# then E's then S=pass. Then partner N opens 1-whatever after that? No,
+# N can't bid again until all others act.
+#
+# Let me set dealer=2 (S=me) so I bid first. I pass. Then W (partner?)
+# Wait partner is seat 0 when I'm seat 2. So dealer=2 sequence: S, W, N, E.
+# If dealer=S=me, I pass. Then W (opp), then N (partner=opener), then E,
+# then back to me.
+# Dealer=2: calls=[P(S=me), ? (W=opp), 1H(N=partner), P(E=opp), ?(S)].
+# After N opens 1H, E passes, my turn.
+dealer_me = 2
+calls_drury = [PASS, PASS, make_bid(1, Suit.H), PASS]
+# Hand: Kxx S (3) + Kxx H (3) + Axxx D (4) + Jxxx C (1) = 11 HCP (close to 10-11)
+hand_drury = _pad_hand(
+    [Card(Rank.KING, Suit.S), Card(Rank.KING, Suit.H),
+     Card(Rank.ACE, Suit.D), Card(Rank.JACK, Suit.C)],
+    {Suit.S: 3, Suit.H: 3, Suit.D: 4, Suit.C: 3},
+)
+check(10 <= hcp(hand_drury) <= 11,
+      f"drury HCP = {hcp(hand_drury)} (expect 10-11)")
+check(hand_shape(hand_drury).length(Suit.H) == 3, "drury has 3 hearts")
+
+obs = make_obs(hand_drury, calls=calls_drury, dealer=dealer_me, player=2)
+bid = resp.bid(obs)
+check(bid == make_bid(2, Suit.C),
+      f"passed hand, partner 1H, 10-11 HCP + 3H -> 2C Drury (got {bid})")
+
+# Non-passed hand with same holding: dealer is partner (seat 0), I bid first time
+# → should NOT use Drury (limit raise 3H instead)
+dealer_partner = 0
+calls_non_drury = [make_bid(1, Suit.H), PASS]
+obs = make_obs(hand_drury, calls=calls_non_drury, dealer=dealer_partner, player=2)
+bid = resp.bid(obs)
+check(bid != make_bid(2, Suit.C),
+      f"non-passed hand, 1H, 10-11 HCP + 3H -> NOT 2C Drury (got {bid})")
+
+
 # ── SUMMARY ──────────────────────────────────────────────────────
 section("SUMMARY")
 total = PASS_COUNT + FAIL_COUNT
