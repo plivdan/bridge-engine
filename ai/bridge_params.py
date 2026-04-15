@@ -139,6 +139,13 @@ class BridgeParams:
     drury_min_hcp: int = 10
     drury_max_hcp: int = 11
 
+    # ── Defensive signals & opening lead (Batch 7) ────────────────
+    use_attitude_signals: bool = True
+    use_count_signals: bool = True
+    avoid_leading_opp_suit: bool = True
+    # "Honor" threshold for encouragement (J=11 is mid; Q=12 stricter)
+    attitude_encourage_min_rank: int = 12
+
     # ── Fit detection ─────────────────────────────────────────────
     fit_min_support_major: int = 3
     fit_min_support_general: int = 4

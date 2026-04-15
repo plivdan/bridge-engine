@@ -500,6 +500,145 @@ with contextlib.redirect_stdout(io.StringIO()):
 check(crash == 0, f"200 boards with enhanced SmartPlayer: 0 crashes")
 
 
+# ── LEAD: AVOID OPP'S BID SUIT (Batch 7) ─────────────────────────
+section("OPENING LEAD: AVOID OPP'S BID SUIT")
+
+# Opp bid spades; I have KQJ in spades AND an AK in clubs (side suit).
+# Trump is hearts. Should lead from clubs (AK), NOT spades (opps bid it).
+hands_opp_bid = {
+    0: [Card(Rank.ACE, Suit.S), Card(Rank.TEN, Suit.S),
+        Card(Rank.SEVEN, Suit.S), Card(Rank.NINE, Suit.H),
+        Card(Rank.FIVE, Suit.D)],  # declarer N (bid spades)
+    1: [Card(Rank.KING, Suit.S), Card(Rank.QUEEN, Suit.S),
+        Card(Rank.JACK, Suit.S), Card(Rank.ACE, Suit.C),
+        Card(Rank.KING, Suit.C)],  # east — leader
+    2: [Card(Rank.FIVE, Suit.S), Card(Rank.FIVE, Suit.H),
+        Card(Rank.SIX, Suit.H), Card(Rank.SEVEN, Suit.H),
+        Card(Rank.EIGHT, Suit.H)],
+    3: [Card(Rank.FOUR, Suit.S), Card(Rank.TWO, Suit.H),
+        Card(Rank.THREE, Suit.H), Card(Rank.TWO, Suit.D),
+        Card(Rank.THREE, Suit.D)],
+}
+
+ps_opp = make_ps(hands_opp_bid, trump=Suit.H, declarer=0, leader=1)
+cp_opp = StateMachineCardPlayer(1)
+obs = make_play_obs(ps_opp, 1,
+                    calls=[make_bid(1, Suit.S), PASS, PASS, PASS])
+card = cp_opp.play_card(obs)
+check(card.suit != Suit.S,
+      f"avoid opp's bid suit (S) when leading (got {card})")
+check(card.suit == Suit.C,
+      f"prefer clubs (AK side suit) over opp's spades (got {card})")
+
+# ── LEAD: AK vs SUIT CONTRACT ────────────────────────────────────
+section("OPENING LEAD: AK AGAINST SUIT CONTRACT")
+
+# Leader has AKxxx in diamonds; trumps are spades. Lead K from AK.
+hands_ak = {
+    0: [Card(Rank.QUEEN, Suit.S), Card(Rank.JACK, Suit.S),
+        Card(Rank.FIVE, Suit.H), Card(Rank.FOUR, Suit.H),
+        Card(Rank.THREE, Suit.D)],  # declarer N
+    1: [Card(Rank.TWO, Suit.S), Card(Rank.TWO, Suit.H),
+        Card(Rank.ACE, Suit.D), Card(Rank.KING, Suit.D),
+        Card(Rank.FIVE, Suit.D)],  # east — leader
+    2: [Card(Rank.TEN, Suit.S), Card(Rank.NINE, Suit.S),
+        Card(Rank.SEVEN, Suit.H), Card(Rank.SIX, Suit.H),
+        Card(Rank.SEVEN, Suit.D)],
+    3: [Card(Rank.EIGHT, Suit.S), Card(Rank.SEVEN, Suit.S),
+        Card(Rank.ACE, Suit.H), Card(Rank.KING, Suit.H),
+        Card(Rank.NINE, Suit.D)],
+}
+
+ps_ak = make_ps(hands_ak, trump=Suit.S, declarer=0, leader=1)
+cp_ak = StateMachineCardPlayer(1)
+obs = make_play_obs(ps_ak, 1)
+card = cp_ak.play_card(obs)
+check(card == Card(Rank.KING, Suit.D),
+      f"AKxxx vs suit contract: lead K (got {card})")
+
+
+# ── ATTITUDE SIGNAL: PARTNER LEADS, I ENCOURAGE ──────────────────
+section("ATTITUDE SIGNAL: ENCOURAGE")
+
+# Partner (W seat 3) leads the ace of hearts against 4S by N.
+# I (E seat 1) hold Q H and some spots; dummy plays low; I'm 3rd hand.
+# I can't beat the ace (partner is winning), so I signal attitude:
+# play the highest spot card since I hold the Q (encourage continuation).
+hands_signal_enc = {
+    0: [Card(Rank.ACE, Suit.S), Card(Rank.KING, Suit.S),
+        Card(Rank.QUEEN, Suit.S), Card(Rank.JACK, Suit.S),
+        Card(Rank.TWO, Suit.H), Card(Rank.THREE, Suit.H),
+        Card(Rank.TWO, Suit.D), Card(Rank.THREE, Suit.D)],  # declarer
+    1: [Card(Rank.FIVE, Suit.S), Card(Rank.SIX, Suit.S),
+        Card(Rank.QUEEN, Suit.H), Card(Rank.NINE, Suit.H),
+        Card(Rank.FIVE, Suit.H), Card(Rank.FOUR, Suit.D),
+        Card(Rank.FIVE, Suit.D), Card(Rank.SIX, Suit.D)],  # east — us
+    2: [Card(Rank.SEVEN, Suit.S), Card(Rank.EIGHT, Suit.S),
+        Card(Rank.FOUR, Suit.H), Card(Rank.SIX, Suit.H),
+        Card(Rank.SEVEN, Suit.D), Card(Rank.EIGHT, Suit.D),
+        Card(Rank.NINE, Suit.D), Card(Rank.TEN, Suit.D)],  # dummy
+    3: [Card(Rank.TWO, Suit.S), Card(Rank.THREE, Suit.S),
+        Card(Rank.ACE, Suit.H), Card(Rank.KING, Suit.H),
+        Card(Rank.SEVEN, Suit.H), Card(Rank.EIGHT, Suit.H),
+        Card(Rank.JACK, Suit.D), Card(Rank.QUEEN, Suit.D)],  # west
+}
+
+ps_enc = make_ps(hands_signal_enc, trump=Suit.S, declarer=0, leader=3)
+# Trick order with leader=W(3): W -> N -> E -> S(dummy). Stop after N
+# plays so E is on lead.
+with contextlib.redirect_stdout(io.StringIO()):
+    ps_enc.play_card(3, Card(Rank.ACE, Suit.H))
+    ps_enc.play_card(0, Card(Rank.TWO, Suit.H))  # declarer plays low
+
+cp_enc = StateMachineCardPlayer(1)
+obs = make_play_obs(ps_enc, 1)
+card = cp_enc.play_card(obs)
+# I hold Q/9/5 remaining; should play 9 (high spot) to encourage.
+# Q is too high (wasted honor); 9 is the high non-honor spot.
+check(card.suit == Suit.H, f"attitude signal: follow hearts (got {card})")
+check(card.rank >= Rank.NINE,
+      f"encourage with Q backing: play high spot (got {card})")
+
+
+# ── ATTITUDE SIGNAL: PARTNER LEADS, I DISCOURAGE ─────────────────
+section("ATTITUDE SIGNAL: DISCOURAGE")
+
+# Same framework but I have no honor in the led suit and no doubleton.
+# Should play lowest spot.
+hands_signal_dis = {
+    0: [Card(Rank.ACE, Suit.S), Card(Rank.KING, Suit.S),
+        Card(Rank.QUEEN, Suit.S), Card(Rank.JACK, Suit.S),
+        Card(Rank.QUEEN, Suit.H), Card(Rank.JACK, Suit.H),
+        Card(Rank.TWO, Suit.D), Card(Rank.THREE, Suit.D)],  # declarer
+    1: [Card(Rank.FIVE, Suit.S), Card(Rank.SIX, Suit.S),
+        Card(Rank.NINE, Suit.H), Card(Rank.SEVEN, Suit.H),
+        Card(Rank.FIVE, Suit.H), Card(Rank.FOUR, Suit.D),
+        Card(Rank.FIVE, Suit.D), Card(Rank.SIX, Suit.D)],  # east — us, three small H
+    2: [Card(Rank.SEVEN, Suit.S), Card(Rank.EIGHT, Suit.S),
+        Card(Rank.FOUR, Suit.H), Card(Rank.SIX, Suit.H),
+        Card(Rank.SEVEN, Suit.D), Card(Rank.EIGHT, Suit.D),
+        Card(Rank.NINE, Suit.D), Card(Rank.TEN, Suit.D)],  # dummy
+    3: [Card(Rank.TWO, Suit.S), Card(Rank.THREE, Suit.S),
+        Card(Rank.ACE, Suit.H), Card(Rank.KING, Suit.H),
+        Card(Rank.EIGHT, Suit.H), Card(Rank.TEN, Suit.H),
+        Card(Rank.JACK, Suit.D), Card(Rank.QUEEN, Suit.D)],  # west
+}
+
+ps_dis = make_ps(hands_signal_dis, trump=Suit.S, declarer=0, leader=3)
+# Order: W -> N -> E(us). Stop after N plays.
+with contextlib.redirect_stdout(io.StringIO()):
+    ps_dis.play_card(3, Card(Rank.ACE, Suit.H))
+    ps_dis.play_card(0, Card(Rank.JACK, Suit.H))  # declarer J (A still winning)
+
+cp_dis = StateMachineCardPlayer(1)
+obs = make_play_obs(ps_dis, 1)
+card = cp_dis.play_card(obs)
+# I have 9/7/5 hearts remaining; can't beat the A anyway. Discourage: play 5.
+check(card.suit == Suit.H, "discourage: still follow hearts")
+check(card.rank == Rank.FIVE,
+      f"discourage with no honor, 3-card holding: play lowest (got {card})")
+
+
 # ── SUMMARY ──────────────────────────────────────────────────────
 section("SUMMARY")
 total = PASS_COUNT + FAIL_COUNT

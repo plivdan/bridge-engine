@@ -460,59 +460,136 @@ class StateMachineCardPlayer:
         valid = obs['valid_cards']
         trump = obs.get('trump')
         calls = obs.get('calls', [])
+        dealer = obs.get('dealer', 0)
         trump_suit = trump if trump != Suit.NT else None
 
+        opp_suits = self._opp_bid_suits(calls, dealer) if getattr(
+            self.params, 'avoid_leading_opp_suit', True) else set()
+
         # Priority 1: partner's bid suit
-        partner_suit = self._partner_bid_suit(calls, obs.get('dealer', 0))
+        partner_suit = self._partner_bid_suit(calls, dealer)
         if partner_suit:
             lead = self._lead_from_suit(valid, partner_suit, trump_suit)
             if lead:
                 return lead
 
-        # Priority 2: top of honor sequence (works for both NT and suit)
-        seq = self._find_sequence(valid, trump_suit)
+        # Priority 2: AK against a suit contract — lead the king (or ace if
+        # king isn't present). From AKxxx+ this is a standard top-of-sequence
+        # attack and sets up a ruff threat later.
+        if trump_suit is not None:
+            ak_lead = self._ak_lead(valid, hand, trump_suit, opp_suits)
+            if ak_lead is not None:
+                return ak_lead
+
+        # Priority 3: singleton vs suit contract (cheap ruff potential),
+        # preferred to broken-honor leads.
+        if trump_suit is not None:
+            single = self._singleton_lead(valid, hand, trump_suit, opp_suits)
+            if single is not None:
+                return single
+
+        # Priority 4: top of a 3+ card honor sequence (KQJ, QJT, JT9...)
+        # outside opp's bid suit.
+        seq = self._find_sequence_safe(valid, trump_suit, opp_suits)
         if seq:
             return seq
 
-        # Priority 3: vs NT — 4th from longest and strongest
+        # Priority 5: vs NT — 4th from longest and strongest outside opp's
+        # suit if possible.
         if trump == Suit.NT:
-            best_suit = self._longest_strongest(hand, trump_suit)
-            if best_suit:
-                lead = self._fourth_best(valid, best_suit)
+            best = self._longest_strongest_safe(hand, trump_suit, opp_suits)
+            if best:
+                lead = self._fourth_best(valid, best)
                 if lead:
                     return lead
 
-        # Priority 4: vs suit contract
-        if trump_suit:
-            # Singleton lead (hoping for ruff)
-            for suit in (Suit.S, Suit.H, Suit.D, Suit.C):
-                if suit == trump_suit:
-                    continue
-                cards_in_suit = [c for c in hand if c.suit == suit]
-                if len(cards_in_suit) == 1 and cards_in_suit[0] in valid:
-                    return cards_in_suit[0]
-
-        # AK lead (vs suit)
-        if trump_suit:
-            for suit in (Suit.S, Suit.H, Suit.D, Suit.C):
-                if suit == trump_suit:
-                    continue
-                suit_cards = sorted([c for c in hand if c.suit == suit],
-                                    key=lambda c: c.rank, reverse=True)
-                if (len(suit_cards) >= 2 and suit_cards[0].rank == Rank.ACE
-                        and suit_cards[1].rank == Rank.KING):
-                    if suit_cards[0] in valid:
-                        return suit_cards[0]
-
-        # 4th best from longest
+        # Priority 6: 4th best from longest (even if it's opp's suit —
+        # sometimes unavoidable).
         best_suit = self._longest_strongest(hand, trump_suit)
         if best_suit:
             lead = self._fourth_best(valid, best_suit)
             if lead:
                 return lead
 
-        # Fallback: highest card
         return max(valid, key=lambda c: c.rank)
+
+    def _opp_bid_suits(self, calls: list, dealer: int) -> set:
+        my_side = {self.seat, (self.seat + 2) % 4}
+        suits = set()
+        for i, c in enumerate(calls):
+            if c.special:
+                continue
+            seat = (dealer + i) % 4
+            if seat not in my_side and c.strain != Suit.NT:
+                suits.add(c.strain)
+        return suits
+
+    def _ak_lead(self, valid: List[Card], hand: List[Card],
+                  trump_suit: Suit, opp_suits: set) -> Optional[Card]:
+        """Return the K (or A if no K) from an AK-headed suit; None if
+        the holding is only AK doubleton in an opp-bid suit."""
+        for suit in (Suit.S, Suit.H, Suit.D, Suit.C):
+            if suit == trump_suit or suit in opp_suits:
+                continue
+            in_suit = sorted([c for c in hand if c.suit == suit],
+                             key=lambda c: c.rank, reverse=True)
+            if (len(in_suit) >= 2 and in_suit[0].rank == Rank.ACE
+                    and in_suit[1].rank == Rank.KING):
+                king = in_suit[1]
+                if king in valid:
+                    return king
+                if in_suit[0] in valid:
+                    return in_suit[0]
+        return None
+
+    def _singleton_lead(self, valid: List[Card], hand: List[Card],
+                         trump_suit: Suit, opp_suits: set) -> Optional[Card]:
+        """Lead a singleton outside opp's bid suit and outside trumps."""
+        for suit in (Suit.S, Suit.H, Suit.D, Suit.C):
+            if suit == trump_suit or suit in opp_suits:
+                continue
+            in_suit = [c for c in hand if c.suit == suit]
+            if len(in_suit) == 1 and in_suit[0] in valid:
+                return in_suit[0]
+        return None
+
+    def _find_sequence_safe(self, valid: List[Card], trump: Optional[Suit],
+                             opp_suits: set) -> Optional[Card]:
+        """Top of sequence, skipping any suit the opps bid."""
+        by_suit: Dict[Suit, List[Card]] = {}
+        for c in valid:
+            if c.suit == trump or c.suit in opp_suits:
+                continue
+            by_suit.setdefault(c.suit, []).append(c)
+        best = None
+        for suit, cards in by_suit.items():
+            cards = sorted(cards, key=lambda c: c.rank, reverse=True)
+            if len(cards) < 2:
+                continue
+            for i in range(len(cards) - 1):
+                if (cards[i].rank >= self.params.sequence_min_rank
+                        and cards[i].rank <= Rank.KING
+                        and cards[i].rank - cards[i + 1].rank == 1):
+                    if best is None or cards[i].rank > best.rank:
+                        best = cards[i]
+                    break
+        return best
+
+    def _longest_strongest_safe(self, hand: List[Card], trump: Optional[Suit],
+                                 opp_suits: set) -> Optional[Suit]:
+        """Longest suit outside trumps and opp's bid suits."""
+        best = None
+        best_key = (-1, -1)
+        for suit in (Suit.S, Suit.H, Suit.D, Suit.C):
+            if suit == trump or suit in opp_suits:
+                continue
+            cards = [c for c in hand if c.suit == suit]
+            honors = sum(1 for c in cards if c.rank >= Rank.TEN)
+            key = (len(cards), honors)
+            if key > best_key:
+                best_key = key
+                best = suit
+        return best
 
     def _partner_bid_suit(self, calls: list, dealer: int) -> Optional[Suit]:
         """Return the suit partner bid, if any."""
@@ -787,6 +864,8 @@ class StateMachineCardPlayer:
 
         following = [c for c in valid if c.suit == led]
 
+        hand = obs.get('hand', [])
+
         if following:
             # Third-hand high: partner led, dummy played low
             if partner_led and not partner_winning:
@@ -794,7 +873,6 @@ class StateMachineCardPlayer:
 
             # Cover an honor with an honor
             if not partner_led and len(trick.cards) == 1:
-                # Second hand
                 led_card = trick.cards[trick.leader]
                 if led_card.rank >= self.params.cover_honor_min:
                     covers = [c for c in following if c.rank > led_card.rank]
@@ -803,27 +881,30 @@ class StateMachineCardPlayer:
                 # Second-hand low
                 return min(following, key=lambda c: c.rank)
 
+            # Partner winning: non-contesting, carry a signal.
             if partner_winning:
-                return min(following, key=lambda c: c.rank)
+                return self._signal_card(following, led, hand, partner_led)
 
             # Try to win cheaply
             winning = [c for c in following
                        if self._beats_current(c, trick, trump_suit)]
             if winning:
                 return min(winning, key=lambda c: c.rank)
-            return min(following, key=lambda c: c.rank)
+            # Can't beat the trick — signal attitude if partner led,
+            # else give a count signal when this is an early round of
+            # declarer's long-suit development.
+            return self._signal_card(following, led, hand, partner_led)
 
         # Can't follow suit — consider ruffing
         if trump_suit and not partner_winning:
             trumps = sorted([c for c in valid if c.suit == trump_suit],
                             key=lambda c: c.rank)
             if trumps:
-                # Ruff high enough to prevent overruff
                 if self.tracker:
                     opp_trumps = self.tracker.cards_outstanding(trump_suit)
-                    hand = obs.get('hand', [])
                     our_trumps = {c for c in hand if c.suit == trump_suit}
-                    opp_trump_ranks = [c.rank for c in opp_trumps if c not in our_trumps]
+                    opp_trump_ranks = [c.rank for c in opp_trumps
+                                       if c not in our_trumps]
                     if opp_trump_ranks:
                         max_opp = max(opp_trump_ranks)
                         safe = [c for c in trumps if c.rank > max_opp]
@@ -831,8 +912,66 @@ class StateMachineCardPlayer:
                             return safe[0]
                 return trumps[0]
 
-        # Discard: throw lowest from weakest suit
-        return min(valid, key=lambda c: (c.rank, c.suit))
+        # Discard: signal attitude on a suit we want led.
+        return self._discard_with_signal(valid, hand, trump_suit)
+
+    def _signal_card(self, following: List[Card], led_suit: Suit,
+                      hand: List[Card], partner_led: bool) -> Card:
+        """Pick a card among equivalents to carry a defensive signal.
+
+        When partner led the suit, attitude signal (high = encourage,
+        low = discourage). When declarer led, count signal on the first
+        round (high from even, low from odd)."""
+        if len(following) == 1:
+            return following[0]
+        # Non-winning candidates (lowest few)
+        sorted_low = sorted(following, key=lambda c: c.rank)
+        # Exclude honor candidates we don't want to waste
+        non_winners = [c for c in sorted_low if c.rank < Rank.TEN] or sorted_low
+
+        if partner_led and self.params.use_attitude_signals:
+            # Encourage if we hold an honor (A/K/Q) in the suit OR we have
+            # a doubleton (potential ruff).
+            suit_cards = [c for c in hand if c.suit == led_suit]
+            has_honor = any(c.rank >= self.params.attitude_encourage_min_rank
+                            for c in suit_cards)
+            doubleton = len(suit_cards) == 2
+            encourage = has_honor or doubleton
+            if encourage and len(non_winners) >= 1:
+                return non_winners[-1]  # highest spot
+            return non_winners[0]       # lowest spot
+
+        if not partner_led and self.params.use_count_signals:
+            # Count signal: high from even, low from odd (original count).
+            suit_cards = [c for c in hand if c.suit == led_suit]
+            # Include the card about to be played in the parity.
+            if len(suit_cards) % 2 == 0:
+                return non_winners[-1] if non_winners else following[-1]
+            return non_winners[0]
+
+        return non_winners[0]
+
+    def _discard_with_signal(self, valid: List[Card], hand: List[Card],
+                              trump_suit: Optional[Suit]) -> Card:
+        """Discard a low card from our weakest non-trump suit. Choose the
+        discard suit to AVOID the one we'd most want led (standard
+        negative-attitude discard)."""
+        by_suit: Dict[Suit, List[Card]] = {}
+        for c in valid:
+            if c.suit == trump_suit:
+                continue
+            by_suit.setdefault(c.suit, []).append(c)
+        if not by_suit:
+            # Only trumps available — dump smallest
+            return min(valid, key=lambda c: (c.rank, c.suit))
+
+        def suit_value(suit: Suit) -> int:
+            cards = [c for c in hand if c.suit == suit]
+            return sum(max(0, c.rank - Rank.TEN + 1) for c in cards)
+
+        # Find the suit with least high-card value — throw a small from there.
+        weakest = min(by_suit.keys(), key=suit_value)
+        return min(by_suit[weakest], key=lambda c: c.rank)
 
     # ------------------------------------------------------------------
     # trick evaluation helpers
