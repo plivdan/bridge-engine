@@ -85,6 +85,11 @@ class BridgeParams:
     # ── Monte Carlo card play ─────────────────────────────────────
     use_monte_carlo: bool = False
     monte_carlo_samples: int = 20
+    # Batch 10: rework knobs.
+    mc_budget_seconds: float = 0.5      # wall-clock cap per decision
+    mc_use_constraints: bool = True     # reject deals that violate auction
+    mc_constraint_max_rejects: int = 50 # fallback: give up after N rejections
+    mc_dedupe_equivalents: bool = True  # skip evaluating obviously equivalent cards
 
     # ── NT-response conventions (Batch 1) ─────────────────────────
     use_stayman: bool = True

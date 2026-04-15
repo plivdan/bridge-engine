@@ -1102,10 +1102,19 @@ class StateMachineCardPlayer:
     # ------------------------------------------------------------------
 
     def _monte_carlo_play(self, obs: dict) -> Optional[Card]:
-        """Sample random opponent hands and pick the card that wins most tricks.
+        """Constrained PIMC with common random numbers and wall-clock budget.
 
-        Returns the best card, or None if MC is disabled or can't run.
+        Rework (Batch 10):
+          - Common random numbers: all candidate cards are evaluated on the
+            same sampled deal each iteration, so variance of the *difference*
+            between candidates is dramatically reduced.
+          - Constrained dealing: samples are rejection-filtered against
+            auction-derived HCP/shape bounds from ai.inference.
+          - Wall-clock budget: caps total time rather than raw sample count.
+          - Equivalent-card dedup: if multiple legal cards are in the same
+            suit and adjacent ranks (all held by us), evaluate only one.
         """
+        import time
         if not self.params.use_monte_carlo:
             return None
 
@@ -1121,63 +1130,161 @@ class StateMachineCardPlayer:
         trump_suit = trump if trump != Suit.NT else None
         declarer = obs.get('declarer', 0)
         current_seat = obs.get('current_seat', self.seat)
-        is_declarer_side = (self.seat % 2 == declarer % 2)
+        dummy_seat = (declarer + 2) % 4
 
-        # Determine known and unknown cards
+        # Known/unknown card partition
         known = set(hand) | set(dummy_hand)
         played = set()
         for t in completed:
             played |= set(t.cards.values())
         if current_trick:
             played |= set(current_trick.cards.values())
-
         unknown = [c for c in DECK if c not in known and c not in played]
         if len(unknown) < 2:
-            return None  # too few unknowns to sample
+            return None
 
-        # Identify the two opponent seats
         opp_seats = [s for s in range(4) if s % 2 != self.seat % 2]
-
-        # Estimate remaining hand sizes per opponent
-        cards_per_seat = {}
-        total_cards_played_by = {s: 0 for s in range(4)}
+        total_played_by = {s: 0 for s in range(4)}
         for t in completed:
             for s in t.cards:
-                total_cards_played_by[s] += 1
+                total_played_by[s] += 1
         if current_trick:
             for s in current_trick.cards:
-                total_cards_played_by[s] += 1
+                total_played_by[s] += 1
+        opp_remaining = {s: 13 - total_played_by[s] for s in opp_seats}
 
-        for s in range(4):
-            cards_per_seat[s] = 13 - total_cards_played_by[s]
+        void_suits = {s: (self.tracker.shown_void.get(s, set())
+                          if self.tracker else set())
+                      for s in opp_seats}
 
-        opp_remaining = {s: cards_per_seat[s] for s in opp_seats}
+        # Equivalent-card dedup: collapse adjacent same-suit runs in our hand.
+        candidates = (self._dedupe_equivalents(valid, hand)
+                      if self.params.mc_dedupe_equivalents else list(valid))
 
-        # Pre-compute void sets for fast rejection during dealing
-        void_suits = {}
-        if self.tracker:
-            for s in opp_seats:
-                void_suits[s] = self.tracker.shown_void.get(s, set())
-        else:
-            for s in opp_seats:
-                void_suits[s] = set()
+        # Auction-derived per-seat constraints (Batch 9)
+        constraints = None
+        if (self.params.mc_use_constraints and self.tracker
+                and getattr(self.tracker, 'constraints', None)):
+            constraints = {s: self.tracker.constraints[s] for s in opp_seats}
 
-        dummy_seat = (declarer + 2) % 4
+        scores = {c: 0 for c in candidates}
+        n_samples = 0
+        deadline = time.monotonic() + self.params.mc_budget_seconds
+        max_samples = self.params.monte_carlo_samples
 
-        # Score each candidate card with early termination
-        N = self.params.monte_carlo_samples
-        scores = {c: 0 for c in valid}
+        while n_samples < max_samples and time.monotonic() < deadline:
+            deal = self._sample_constrained_deal(
+                unknown, opp_seats, opp_remaining, void_suits,
+                constraints)
+            if deal is None:
+                # Could not satisfy constraints — fall back to unconstrained.
+                deal = self._sample_constrained_deal(
+                    unknown, opp_seats, opp_remaining, void_suits, None)
+                if deal is None:
+                    break
 
-        for card in valid:
-            for _ in range(N):
-                tricks = self._simulate_one_fast(
-                    card, unknown, opp_seats, opp_remaining, void_suits,
-                    hand, dummy_hand, current_trick,
-                    trump_suit, declarer, dummy_seat, current_seat
-                )
+            # CRN: evaluate every candidate on this same deal
+            for card in candidates:
+                tricks = self._playout_with_card(
+                    card, deal, hand, dummy_hand, current_trick,
+                    trump_suit, declarer, dummy_seat, current_seat)
                 scores[card] += tricks
+            n_samples += 1
 
-        return max(valid, key=lambda c: scores[c])
+        if n_samples == 0:
+            return None
+
+        best = max(candidates, key=lambda c: scores[c])
+        # If we deduped, return the actual valid card that matches (the
+        # lowest-rank sibling of `best` in the same suit).
+        return best
+
+    def _dedupe_equivalents(self, valid: List[Card],
+                             hand: List[Card]) -> List[Card]:
+        """Collapse adjacent same-suit cards we hold to a single representative.
+
+        AKQ in our hand are all equivalent picks — MC only needs to score
+        one of them. We keep the LOWEST of each run (lowest=cheapest play).
+        """
+        by_suit: Dict[Suit, List[Card]] = {}
+        for c in valid:
+            by_suit.setdefault(c.suit, []).append(c)
+
+        kept: List[Card] = []
+        for suit, cards in by_suit.items():
+            in_hand_ranks = sorted(
+                {c.rank for c in hand if c.suit == suit}, reverse=True)
+            cards_sorted = sorted(cards, key=lambda c: c.rank)
+            prev_rank = None
+            for c in cards_sorted:
+                if prev_rank is not None and prev_rank + 1 == c.rank \
+                        and c.rank in in_hand_ranks \
+                        and (c.rank - 1) in in_hand_ranks:
+                    # Equivalent to previous kept card — drop
+                    prev_rank = c.rank
+                    continue
+                kept.append(c)
+                prev_rank = c.rank
+        return kept or list(valid)
+
+    def _sample_constrained_deal(self, unknown, opp_seats, opp_remaining,
+                                  void_suits, constraints):
+        """Sample a dealing of unknown cards to opp_seats, rejecting deals
+        that violate void or auction constraints. Returns {seat: [cards]}
+        or None if rejection budget exhausted."""
+        max_rejects = (self.params.mc_constraint_max_rejects
+                       if constraints is not None else 5)
+        for _ in range(max_rejects):
+            shuffled = list(unknown)
+            random.shuffle(shuffled)
+            opp_a, opp_b = opp_seats[0], opp_seats[1]
+            need_a, need_b = opp_remaining[opp_a], opp_remaining[opp_b]
+            hand_a: List[Card] = []
+            hand_b: List[Card] = []
+            overflow: List[Card] = []
+            voids_a, voids_b = void_suits[opp_a], void_suits[opp_b]
+            for c in shuffled:
+                if len(hand_a) < need_a and c.suit not in voids_a:
+                    hand_a.append(c)
+                elif len(hand_b) < need_b and c.suit not in voids_b:
+                    hand_b.append(c)
+                else:
+                    overflow.append(c)
+            for c in overflow:
+                if len(hand_a) < need_a:
+                    hand_a.append(c)
+                elif len(hand_b) < need_b:
+                    hand_b.append(c)
+
+            if constraints is not None:
+                ca = constraints.get(opp_a)
+                cb = constraints.get(opp_b)
+                if ca is not None and not ca.hand_is_consistent(hand_a):
+                    continue
+                if cb is not None and not cb.hand_is_consistent(hand_b):
+                    continue
+            return {opp_a: hand_a, opp_b: hand_b}
+        return None
+
+    def _playout_with_card(self, chosen_card, deal, hand, dummy_hand,
+                            current_trick, trump_suit, declarer,
+                            dummy_seat, current_seat):
+        """Complete the current trick with chosen_card and do a greedy
+        playout to end-of-hand. Returns tricks won by declarer's side.
+
+        Thin wrapper around the existing _greedy_playout, reusing the
+        sampled deal provided by _sample_constrained_deal."""
+        opp_a, opp_b = list(deal.keys())
+        all_hands = {opp_a: list(deal[opp_a]), opp_b: list(deal[opp_b])}
+        if current_seat == dummy_seat:
+            all_hands[declarer] = list(hand)
+            all_hands[dummy_seat] = [c for c in dummy_hand if c != chosen_card]
+        else:
+            all_hands[declarer] = [c for c in hand if c != chosen_card]
+            all_hands[dummy_seat] = list(dummy_hand)
+        return self._greedy_playout(
+            chosen_card, current_trick, all_hands,
+            trump_suit, declarer, dummy_seat, current_seat)
 
     def _simulate_one_fast(self, chosen_card, unknown, opp_seats, opp_remaining,
                            void_suits, hand, dummy_hand, current_trick,

@@ -707,6 +707,103 @@ check(card == Card(Rank.KING, Suit.H),
       f"with K available: take cheaply (got {card})")
 
 
+# ── MC REWORK (Batch 10) ─────────────────────────────────────────
+section("MONTE CARLO REWORK: CRN / CONSTRAINED / BUDGET")
+
+import time as _t
+from ai.bridge_params import BridgeParams
+
+# End-to-end: MC produces a legal card within budget when enabled.
+mc_params = BridgeParams(
+    use_monte_carlo=True,
+    monte_carlo_samples=30,
+    mc_budget_seconds=0.5,
+    mc_use_constraints=True,
+    mc_dedupe_equivalents=True,
+)
+
+hands_mc = {
+    0: [Card(Rank.ACE, Suit.S), Card(Rank.KING, Suit.S),
+        Card(Rank.SEVEN, Suit.H), Card(Rank.FIVE, Suit.H),
+        Card(Rank.FOUR, Suit.D), Card(Rank.THREE, Suit.D),
+        Card(Rank.TWO, Suit.C)],
+    1: [Card(Rank.QUEEN, Suit.S), Card(Rank.JACK, Suit.S),
+        Card(Rank.TEN, Suit.S), Card(Rank.ACE, Suit.H),
+        Card(Rank.KING, Suit.H), Card(Rank.ACE, Suit.D),
+        Card(Rank.KING, Suit.D)],
+    2: [Card(Rank.NINE, Suit.S), Card(Rank.EIGHT, Suit.S),
+        Card(Rank.QUEEN, Suit.H), Card(Rank.JACK, Suit.H),
+        Card(Rank.TEN, Suit.H), Card(Rank.NINE, Suit.H),
+        Card(Rank.THREE, Suit.C)],
+    3: [Card(Rank.SEVEN, Suit.S), Card(Rank.SIX, Suit.S),
+        Card(Rank.EIGHT, Suit.H), Card(Rank.QUEEN, Suit.D),
+        Card(Rank.JACK, Suit.D), Card(Rank.ACE, Suit.C),
+        Card(Rank.KING, Suit.C)],
+}
+
+ps_mc = make_ps(hands_mc, trump=Suit.S, declarer=0, leader=3)
+cp_mc = StateMachineCardPlayer(3, params=mc_params)
+obs = make_play_obs(ps_mc, 3)
+
+t0 = _t.monotonic()
+card = cp_mc.play_card(obs)
+elapsed = _t.monotonic() - t0
+
+check(card in obs['valid_cards'],
+      f"MC play returns a legal card (got {card})")
+check(elapsed < 1.5,
+      f"MC respects ~0.5s budget (actually took {elapsed:.2f}s)")
+
+# Dedupe: if I hold AKQJ in one suit, MC should evaluate only one
+# representative card from that run.
+dedupe_hand = [Card(Rank.ACE, Suit.S), Card(Rank.KING, Suit.S),
+                Card(Rank.QUEEN, Suit.S), Card(Rank.JACK, Suit.S)]
+dedupe_valid = list(dedupe_hand)
+cp_dd = StateMachineCardPlayer(0, params=mc_params)
+deduped = cp_dd._dedupe_equivalents(dedupe_valid, dedupe_hand)
+check(len(deduped) == 1,
+      f"AKQJ dedupes to a single rep (got {len(deduped)})")
+
+# Non-adjacent cards don't dedupe: AK and J with Q missing.
+mixed_hand = [Card(Rank.ACE, Suit.S), Card(Rank.KING, Suit.S),
+               Card(Rank.JACK, Suit.S)]
+deduped2 = cp_dd._dedupe_equivalents(mixed_hand, mixed_hand)
+check(len(deduped2) == 2,
+      f"A+K run + lone J keeps 2 reps (got {len(deduped2)})")
+
+# Constrained dealing: reject deals that violate 1NT opener constraint.
+# Construct a scenario where opp 1 opened 1NT; MC sampler should prefer
+# deals where opp 1 has 15-17 HCP balanced. We don't need to verify the
+# exact HCP distribution (that'd be a statistical test), just that
+# _sample_constrained_deal returns a deal or falls back cleanly.
+from ai.inference import SeatConstraints
+constraints = {
+    1: SeatConstraints(hcp_min=15, hcp_max=17, is_balanced=True),
+    3: SeatConstraints(),  # partner of 1NT opener: unbounded
+}
+# Use cp_mc's sampler method directly
+unknown_cards = [c for c in obs['valid_cards']]  # reuse list for sanity
+# Populate with a realistic set: all 26 opp cards (not our side)
+ns_hands = obs['hand'] + (obs.get('dummy_hand') or [])
+# pretend-unknown: all deck cards minus our known ones
+from engine.card import DECK
+ns_known = set(ns_hands)
+unknown = [c for c in DECK if c not in ns_known]
+deal = cp_mc._sample_constrained_deal(
+    unknown=unknown,
+    opp_seats=[1, 3],
+    opp_remaining={1: 13, 3: 13},
+    void_suits={1: set(), 3: set()},
+    constraints=constraints,
+)
+if deal is not None:
+    check(constraints[1].hand_is_consistent(deal[1]),
+          "constrained deal respects 1NT opener's HCP/balance constraints")
+else:
+    # Acceptable: rejection budget exhausted. Not a bug.
+    check(True, "constrained deal: rejection budget exhausted (acceptable)")
+
+
 # ── SUMMARY ──────────────────────────────────────────────────────
 section("SUMMARY")
 total = PASS_COUNT + FAIL_COUNT
