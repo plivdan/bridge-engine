@@ -316,6 +316,228 @@ check(hand_shape(HAND_1H).longest_suit == Suit.H,
       "HAND_1H longest suit is hearts")
 
 
+# ── NT-RESPONSE CONVENTIONS (Batch 1) ────────────────────────────
+section("NT-RESPONSE CONVENTIONS: STAYMAN / JACOBY TRANSFERS / GERBER")
+
+# Helper: 13-card hand with specified suit lengths and known honors.
+def _pad_hand(honors, lengths):
+    """Build a 13-card hand from a list of Card honors plus filler spot cards.
+
+    honors: list[Card] — the specific honors you want to place.
+    lengths: dict[Suit, int] — total length per suit; filler added to match.
+    """
+    # Spot cards (2-9) available per suit, skipping any we already placed.
+    all_spots = {s: [Rank(r) for r in range(2, 10)] for s in
+                 (Suit.S, Suit.H, Suit.D, Suit.C)}
+    for c in honors:
+        if c.rank in all_spots[c.suit]:
+            all_spots[c.suit].remove(c.rank)
+    hand = list(honors)
+    by_suit = {s: [c for c in honors if c.suit == s] for s in all_spots}
+    for s, target_len in lengths.items():
+        need = target_len - len(by_suit[s])
+        for _ in range(max(0, need)):
+            hand.append(Card(all_spots[s].pop(0), s))
+    return hand
+
+# Stayman: 9 HCP with 4 hearts, 4-3-3-3 → 2C
+# Responder hand: Kx in S, AJxx in H, Qxx in D, Kxx in C (not going to pass it manually; use _pad_hand)
+hand_stayman = _pad_hand(
+    [Card(Rank.ACE, Suit.H), Card(Rank.JACK, Suit.H),
+     Card(Rank.QUEEN, Suit.D), Card(Rank.KING, Suit.C)],
+    {Suit.S: 3, Suit.H: 4, Suit.D: 3, Suit.C: 3},
+)
+check(hcp(hand_stayman) == 10, f"Stayman test hand HCP = {hcp(hand_stayman)} (expect 10)")
+check(hand_shape(hand_stayman).length(Suit.H) == 4, "Stayman hand has 4 hearts")
+
+resp = StateMachineBidder(2)
+calls_1nt = [make_bid(1, Suit.NT), PASS]
+obs = make_obs(hand_stayman, calls=calls_1nt, dealer=0, player=2)
+bid = resp.bid(obs)
+check(bid == make_bid(2, Suit.C),
+      f"10 HCP + 4 hearts over 1NT -> 2C Stayman (got {bid})")
+
+# Jacoby Transfer to hearts: 5 hearts, any strength → 2D
+hand_transfer_h = _pad_hand(
+    [Card(Rank.KING, Suit.H), Card(Rank.QUEEN, Suit.H),
+     Card(Rank.JACK, Suit.H)],
+    {Suit.S: 3, Suit.H: 5, Suit.D: 3, Suit.C: 2},
+)
+check(hand_shape(hand_transfer_h).length(Suit.H) == 5, "Transfer-H hand has 5 hearts")
+obs = make_obs(hand_transfer_h, calls=calls_1nt, dealer=0, player=2)
+bid = resp.bid(obs)
+check(bid == make_bid(2, Suit.D),
+      f"5-card heart over 1NT -> 2D Jacoby Transfer (got {bid})")
+
+# Jacoby Transfer to spades: 5 spades → 2H
+hand_transfer_s = _pad_hand(
+    [Card(Rank.ACE, Suit.S), Card(Rank.KING, Suit.S),
+     Card(Rank.JACK, Suit.S)],
+    {Suit.S: 5, Suit.H: 3, Suit.D: 3, Suit.C: 2},
+)
+obs = make_obs(hand_transfer_s, calls=calls_1nt, dealer=0, player=2)
+bid = resp.bid(obs)
+check(bid == make_bid(2, Suit.H),
+      f"5-card spade over 1NT -> 2H Jacoby Transfer (got {bid})")
+
+# Weak Jacoby Transfer: 3 HCP + 5 hearts → still transfer (then pass)
+hand_transfer_weak = _pad_hand(
+    [Card(Rank.JACK, Suit.H)],
+    {Suit.S: 3, Suit.H: 5, Suit.D: 3, Suit.C: 2},
+)
+check(hcp(hand_transfer_weak) <= 3, "Weak-transfer hand is weak")
+obs = make_obs(hand_transfer_weak, calls=calls_1nt, dealer=0, player=2)
+bid = resp.bid(obs)
+check(bid == make_bid(2, Suit.D),
+      f"Weak 5-card heart over 1NT -> still transfers (got {bid})")
+
+# Hand with no 4/5 card major and modest values → still 3NT (natural path)
+hand_no_major = _pad_hand(
+    [Card(Rank.KING, Suit.S), Card(Rank.QUEEN, Suit.H),
+     Card(Rank.ACE, Suit.D), Card(Rank.KING, Suit.D),
+     Card(Rank.JACK, Suit.C)],
+    {Suit.S: 3, Suit.H: 3, Suit.D: 4, Suit.C: 3},
+)
+check(hcp(hand_no_major) == 13, f"no-major hand HCP = {hcp(hand_no_major)} (expect 13)")
+obs = make_obs(hand_no_major, calls=calls_1nt, dealer=0, player=2)
+bid = resp.bid(obs)
+check(bid == make_bid(3, Suit.NT),
+      f"13 HCP, no 4-card major over 1NT -> 3NT (got {bid})")
+
+# Opener completes transfer: 1NT-2D, opener has 2 hearts + 15 HCP → 2H (simple accept)
+# Opener hand: 15 HCP, 2 hearts, balanced 4-2-4-3 (no 4-card support, no super-accept)
+opener_min = _pad_hand(
+    [Card(Rank.KING, Suit.S), Card(Rank.QUEEN, Suit.S),
+     Card(Rank.JACK, Suit.S), Card(Rank.KING, Suit.H),
+     Card(Rank.ACE, Suit.D), Card(Rank.QUEEN, Suit.D)],
+    {Suit.S: 4, Suit.H: 2, Suit.D: 4, Suit.C: 3},
+)
+check(hcp(opener_min) == 15, f"opener_min HCP = {hcp(opener_min)} (expect 15)")
+
+# Seat 0 opens 1NT, seat 1 PASS, seat 2 (partner) 2D, seat 3 PASS, seat 0 rebids
+opener = StateMachineBidder(0)
+calls_after_transfer = [
+    make_bid(1, Suit.NT),  # N: 1NT
+    PASS,                   # E
+    make_bid(2, Suit.D),    # S: 2D transfer
+    PASS,                   # W
+]
+obs = make_obs(opener_min, calls=calls_after_transfer, dealer=0, player=0)
+bid = opener.bid(obs)
+check(bid == make_bid(2, Suit.H),
+      f"1NT-P-2D-P, opener (15 HCP, 2H) -> 2H accept (got {bid})")
+
+# Super-accept: opener has 17 HCP + 4 hearts → 3H
+# AKx S (7) + AKxx H (7) + Qxx D (2) + Jxx C (1) = 17
+opener_max = _pad_hand(
+    [Card(Rank.ACE, Suit.S), Card(Rank.KING, Suit.S),
+     Card(Rank.ACE, Suit.H), Card(Rank.KING, Suit.H),
+     Card(Rank.QUEEN, Suit.D), Card(Rank.JACK, Suit.C)],
+    {Suit.S: 3, Suit.H: 4, Suit.D: 3, Suit.C: 3},
+)
+check(hcp(opener_max) == 17, f"opener_max HCP = {hcp(opener_max)} (expect 17)")
+check(hand_shape(opener_max).length(Suit.H) == 4, "opener_max has 4 hearts")
+obs = make_obs(opener_max, calls=calls_after_transfer, dealer=0, player=0)
+bid = opener.bid(obs)
+check(bid == make_bid(3, Suit.H),
+      f"1NT-P-2D-P, opener (17 HCP, 4H) -> 3H super-accept (got {bid})")
+
+# Opener answers Stayman with 4 hearts → 2H
+opener_stayman_h = _pad_hand(
+    [Card(Rank.ACE, Suit.S), Card(Rank.KING, Suit.H),
+     Card(Rank.QUEEN, Suit.H), Card(Rank.ACE, Suit.D),
+     Card(Rank.KING, Suit.C), Card(Rank.QUEEN, Suit.C)],
+    {Suit.S: 3, Suit.H: 4, Suit.D: 3, Suit.C: 3},
+)
+calls_after_stayman = [
+    make_bid(1, Suit.NT), PASS, make_bid(2, Suit.C), PASS,
+]
+obs = make_obs(opener_stayman_h, calls=calls_after_stayman, dealer=0, player=0)
+bid = opener.bid(obs)
+check(bid == make_bid(2, Suit.H),
+      f"1NT-P-2C-P, opener with 4H -> 2H (got {bid})")
+
+# Opener answers Stayman with no 4-card major → 2D denial
+opener_stayman_no = _pad_hand(
+    [Card(Rank.ACE, Suit.S), Card(Rank.KING, Suit.S),
+     Card(Rank.QUEEN, Suit.H), Card(Rank.ACE, Suit.D),
+     Card(Rank.KING, Suit.D), Card(Rank.KING, Suit.C)],
+    {Suit.S: 3, Suit.H: 3, Suit.D: 4, Suit.C: 3},
+)
+obs = make_obs(opener_stayman_no, calls=calls_after_stayman, dealer=0, player=0)
+bid = opener.bid(obs)
+check(bid == make_bid(2, Suit.D),
+      f"1NT-P-2C-P, opener no 4-card major -> 2D denial (got {bid})")
+
+# Responder post-transfer: weak hand PASSES completion (does not raise past 2H)
+calls_post_transfer = [
+    make_bid(1, Suit.NT), PASS, make_bid(2, Suit.D), PASS,
+    make_bid(2, Suit.H),  PASS,
+]
+obs = make_obs(hand_transfer_weak, calls=calls_post_transfer, dealer=0, player=2)
+bid = resp.bid(obs)
+check(bid == PASS,
+      f"1NT-P-2D-P-2H-P, weak hand -> PASS (got {bid})")
+
+# Responder post-transfer: game values + 5 hearts → 3NT (let opener pick)
+# Kx S (3) + AKxxx H (7) + Qxx D (2) + xxx C (0) = 12 HCP
+hand_trans_game = _pad_hand(
+    [Card(Rank.KING, Suit.S), Card(Rank.ACE, Suit.H),
+     Card(Rank.KING, Suit.H), Card(Rank.QUEEN, Suit.D)],
+    {Suit.S: 2, Suit.H: 5, Suit.D: 3, Suit.C: 3},
+)
+check(hcp(hand_trans_game) >= 10 and hcp(hand_trans_game) <= 15,
+      f"trans_game HCP = {hcp(hand_trans_game)} (expect 10-15)")
+obs = make_obs(hand_trans_game, calls=calls_post_transfer, dealer=0, player=2)
+bid = resp.bid(obs)
+check(bid == make_bid(3, Suit.NT),
+      f"1NT-P-2D-P-2H-P, 5H game values -> 3NT (got {bid})")
+
+# Responder post-transfer: game values + 6 hearts → 4H
+# x S (0) + KQJxxx H (6) + Axx D (4) + Jxx C (1) = 11 HCP, 6 hearts
+hand_trans_6h = _pad_hand(
+    [Card(Rank.KING, Suit.H), Card(Rank.QUEEN, Suit.H),
+     Card(Rank.JACK, Suit.H), Card(Rank.ACE, Suit.D),
+     Card(Rank.JACK, Suit.C)],
+    {Suit.S: 1, Suit.H: 6, Suit.D: 3, Suit.C: 3},
+)
+check(hand_shape(hand_trans_6h).length(Suit.H) == 6, "trans_6h has 6 hearts")
+obs = make_obs(hand_trans_6h, calls=calls_post_transfer, dealer=0, player=2)
+bid = resp.bid(obs)
+check(bid == make_bid(4, Suit.H),
+      f"1NT-P-2D-P-2H-P, 6H game values -> 4H (got {bid})")
+
+# Full auction: 5-3 heart fit reached via transfer
+# N opens 1NT (15-17), S has 10 HCP + 5H → 1NT-2D-2H-3NT-4H path expected
+# (or 1NT-2D-2H-...-4H if 5-card transfer + game values)
+from engine.state import GameState
+
+hand_n_1nt = _pad_hand(
+    [Card(Rank.ACE, Suit.S), Card(Rank.KING, Suit.S),
+     Card(Rank.QUEEN, Suit.H), Card(Rank.ACE, Suit.D),
+     Card(Rank.JACK, Suit.D), Card(Rank.KING, Suit.C),
+     Card(Rank.QUEEN, Suit.C)],
+    {Suit.S: 3, Suit.H: 3, Suit.D: 4, Suit.C: 3},
+)
+hand_s_transfer = _pad_hand(
+    [Card(Rank.ACE, Suit.H), Card(Rank.KING, Suit.H),
+     Card(Rank.JACK, Suit.H), Card(Rank.QUEEN, Suit.D),
+     Card(Rank.KING, Suit.C)],
+    {Suit.S: 3, Suit.H: 5, Suit.D: 3, Suit.C: 2},
+)
+
+auction_transfer = run_auction({
+    0: hand_n_1nt, 1: hand_e_weak, 2: hand_s_transfer, 3: hand_w_weak,
+})
+contract_t = auction_transfer.contract
+check(contract_t is not None, "transfer auction produced a contract")
+if contract_t:
+    check(contract_t.strain == Suit.H or contract_t.strain == Suit.NT,
+          f"1NT with 5H opposite should reach H or NT (got {contract_t.strain})")
+    check(contract_t.level >= 3,
+          f"~26 combined should reach game level (got {contract_t.level})")
+
+
 # ── SUMMARY ──────────────────────────────────────────────────────
 section("SUMMARY")
 total = PASS_COUNT + FAIL_COUNT

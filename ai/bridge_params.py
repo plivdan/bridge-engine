@@ -86,6 +86,15 @@ class BridgeParams:
     use_monte_carlo: bool = False
     monte_carlo_samples: int = 20
 
+    # ── NT-response conventions (Batch 1) ─────────────────────────
+    use_stayman: bool = True
+    use_jacoby_transfers: bool = True
+    use_gerber: bool = True
+    stayman_min_hcp: int = 8
+    transfer_super_accept_min_hcp: int = 17
+    transfer_super_accept_min_trumps: int = 4
+    gerber_min_hcp: int = 16
+
     # ── Fit detection ─────────────────────────────────────────────
     fit_min_support_major: int = 3
     fit_min_support_general: int = 4

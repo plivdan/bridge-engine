@@ -24,6 +24,11 @@ from .hand_eval import (
     biddable_suit, quick_tricks, HandShape,
 )
 from .bridge_params import BridgeParams
+from .bid_meaning import (
+    interpret_response_to_1nt,
+    gerber_ace_response,
+    gerber_aces_from_response,
+)
 from .trace import DecisionTrace
 
 
@@ -89,6 +94,171 @@ class StateMachineBidder:
         return None
 
     # ------------------------------------------------------------------
+    # convention-aware decoding of partner's bids
+    # ------------------------------------------------------------------
+
+    def _partner_real_suit_bids(self, partner_bids: list,
+                                 my_bids: list) -> List[Bid]:
+        """Return partner's bids with conventional calls decoded to real suits.
+
+        Jacoby Transfer (2D over 1NT → hearts, 2H over 1NT → spades, and the
+        analogous 3D/3H over 2NT) is replaced with a synthetic bid in the
+        target suit so that fit detection sees partner's real holding.
+        Stayman, Gerber, and quantitative 4NT are dropped (artificial, no
+        suit shown).
+        """
+        if not partner_bids or not my_bids:
+            return partner_bids
+        my_first = my_bids[0]
+        after_1nt = (my_first.level == 1 and my_first.strain == Suit.NT)
+        after_2nt = (my_first.level == 2 and my_first.strain == Suit.NT)
+        if not (after_1nt or after_2nt):
+            return partner_bids
+
+        out: List[Bid] = []
+        for i, b in enumerate(partner_bids):
+            if i != 0:
+                out.append(b)
+                continue
+            if after_1nt:
+                meaning = interpret_response_to_1nt(b, self.params)
+            else:
+                meaning = self._interpret_response_to_2nt(b)
+            if meaning.is_transfer and meaning.shows_suit is not None:
+                out.append(make_bid(b.level, meaning.shows_suit))
+                continue
+            if meaning.convention in ('stayman', 'gerber', 'quantitative'):
+                continue  # artificial; drop so fit detection doesn't see it
+            out.append(b)
+        return out
+
+    def _interpret_response_to_2nt(self, call: Bid):
+        """Shifted-up variant of interpret_response_to_1nt for 2NT openings."""
+        from .bid_meaning import BidMeaning
+        if call is None or call.special:
+            return BidMeaning(convention='pass')
+        lv, st = call.level, call.strain
+        if lv == 3 and st == Suit.C and self.params.use_stayman:
+            return BidMeaning(convention='stayman',
+                              hcp_min=4, promises_4_major=True)
+        if lv == 3 and st == Suit.D and self.params.use_jacoby_transfers:
+            return BidMeaning(convention='jacoby_transfer',
+                              shows_suit=Suit.H, shows_length_min=5,
+                              is_transfer=True)
+        if lv == 3 and st == Suit.H and self.params.use_jacoby_transfers:
+            return BidMeaning(convention='jacoby_transfer',
+                              shows_suit=Suit.S, shows_length_min=5,
+                              is_transfer=True)
+        if lv == 4 and st == Suit.C and self.params.use_gerber:
+            return BidMeaning(convention='gerber', asks_aces=True,
+                              hcp_min=self.params.gerber_min_hcp)
+        return BidMeaning(convention='natural',
+                          shows_suit=st if st != Suit.NT else None)
+
+    # ------------------------------------------------------------------
+    # opener's completion of NT-response conventions
+    # ------------------------------------------------------------------
+
+    def _complete_nt_convention(self, hand: List[Card], h: int,
+                                 shape: HandShape, meaning,
+                                 partner_call: Bid, valid: list) -> Optional[Bid]:
+        """Answer partner's conventional response to my 1NT/2NT opening.
+
+        Returns a Bid if the convention applies, else None (fall through to
+        the generic opener-rebid logic).
+        """
+        if meaning.convention == 'jacoby_transfer':
+            target = meaning.shows_suit
+            trumps = suit_length(hand, target)
+            # Super-accept: max HCP + 4+ trumps → jump one level
+            if (h >= self.params.transfer_super_accept_min_hcp
+                    and trumps >= self.params.transfer_super_accept_min_trumps):
+                b = self._best_valid(partner_call.level + 1, target, valid)
+                if b:
+                    return b
+            # Simple accept: bid target suit at same level as the transfer
+            b = self._best_valid(partner_call.level, target, valid)
+            if b:
+                return b
+            # Target level unavailable (pre-empted): cheapest in target
+            b = self._cheapest_in_suit(target, valid)
+            if b:
+                return b
+            return PASS
+
+        if meaning.convention == 'stayman':
+            level = partner_call.level  # 2 over 1NT, 3 over 2NT
+            # Up-the-line: hearts first, spades second
+            if shape.length(Suit.H) >= 4:
+                b = self._best_valid(level, Suit.H, valid)
+                if b:
+                    return b
+            if shape.length(Suit.S) >= 4:
+                b = self._best_valid(level, Suit.S, valid)
+                if b:
+                    return b
+            # No 4-card major: 2D/3D denial
+            b = self._best_valid(level, Suit.D, valid)
+            if b:
+                return b
+            return None
+
+        if meaning.convention == 'gerber':
+            aces = sum(1 for c in hand if c.rank == Rank.ACE)
+            resp_strain = gerber_ace_response(aces)
+            b = self._best_valid(4, resp_strain, valid)
+            if b:
+                return b
+            return None
+
+        if meaning.convention == 'quantitative':
+            # Partner invited slam. Accept with a maximum, otherwise sign off.
+            if h >= self.params.open_1nt_max:  # e.g. 17 for 15-17 range
+                b = self._best_valid(6, Suit.NT, valid)
+                if b:
+                    return b
+            return PASS
+
+        return None
+
+    def _awaiting_convention_completion(self, my_bids: list,
+                                         partner_bids: list) -> bool:
+        """True if the next bid should complete an NT-response convention.
+
+        Either I opened NT and partner just responded with a convention,
+        or partner opened NT, I responded with a convention, and partner
+        answered — in both cases we should continue the conventional auction
+        rather than jumping into Blackwood.
+        """
+        if not my_bids or not partner_bids:
+            return False
+        my_first = my_bids[0]
+        p_first = partner_bids[0]
+        # I opened 1NT/2NT, partner's only bid is a response convention
+        if (not my_first.special and my_first.strain == Suit.NT
+                and my_first.level in (1, 2)
+                and len(partner_bids) == 1 and not p_first.special):
+            if my_first.level == 1:
+                meaning = interpret_response_to_1nt(p_first, self.params)
+            else:
+                meaning = self._interpret_response_to_2nt(p_first)
+            if (meaning.is_transfer
+                    or meaning.convention in ('stayman', 'gerber', 'quantitative')):
+                return True
+        # Partner opened 1NT/2NT, I made a convention bid, partner has replied
+        if (not p_first.special and p_first.strain == Suit.NT
+                and p_first.level in (1, 2)
+                and len(my_bids) == 1 and not my_first.special):
+            if p_first.level == 1:
+                meaning = interpret_response_to_1nt(my_first, self.params)
+            else:
+                meaning = self._interpret_response_to_2nt(my_first)
+            if (meaning.is_transfer
+                    or meaning.convention in ('stayman', 'gerber')):
+                return True
+        return False
+
+    # ------------------------------------------------------------------
     # phase detection
     # ------------------------------------------------------------------
 
@@ -113,7 +283,13 @@ class StateMachineBidder:
             # For slam, use min + 1/3 of range (conservative)
             partner_est = est.min_hcp + int((est.max_hcp - est.min_hcp) * self.params.partner_est_fraction)
             combined = tp + partner_est
-            if combined >= self.params.slam_small_min and fit is not None:
+            # Suppress slam-jump if partner's first response is an NT-
+            # response convention not yet refined by a follow-up: partner
+            # could be 0 HCP (weak transfer) and we must complete first.
+            suppress_slam = self._awaiting_convention_completion(my, partner)
+            if (not suppress_slam
+                    and combined >= self.params.slam_small_min
+                    and fit is not None):
                 return BidPhase.SLAM_INVESTIGATION
             if len(my) == 1 and len(partner) >= 1:
                 return BidPhase.OPENER_REBID
@@ -135,8 +311,11 @@ class StateMachineBidder:
         """Return best agreed trump suit if an 8+ card fit is likely.
 
         Checks all suits and returns the one with the longest combined
-        holding, preferring majors over minors.
+        holding, preferring majors over minors. Conventional calls
+        (Stayman, transfers, Gerber) are decoded first so we see partner's
+        real suit, not the artificial bid.
         """
+        partner_bids = self._partner_real_suit_bids(partner_bids, my_bids)
         best_suit = None
         best_len = 0
         for suit in (Suit.S, Suit.H, Suit.D, Suit.C):
@@ -220,7 +399,67 @@ class StateMachineBidder:
                                 and my_first_idx < partner_first_idx)
 
         if partner_is_responder:
-            # Partner is RESPONDING to our opening
+            # Partner is RESPONDING to our opening.
+            # Convention-aware interpretation: if I opened 1NT or 2NT,
+            # classify partner's first bid as Stayman/transfer/Gerber/natural.
+            if my_bids_here:
+                my_opening = my_bids_here[0]
+                opened_1nt = (my_opening.level == 1
+                              and my_opening.strain == Suit.NT)
+                opened_2nt = (my_opening.level == 2
+                              and my_opening.strain == Suit.NT)
+                if opened_1nt or opened_2nt:
+                    meaning = (interpret_response_to_1nt(first, self.params)
+                               if opened_1nt
+                               else self._interpret_response_to_2nt(first))
+                    applied = True
+                    if meaning.convention == 'jacoby_transfer':
+                        # Any strength; promises 5+ in target suit. Refine
+                        # from partner's second bid if present.
+                        est.min_hcp, est.max_hcp = 0, 40
+                        est.known_suits[meaning.shows_suit] = meaning.shows_length_min
+                        if len(partner_bids) >= 2:
+                            rebid = partner_bids[1]
+                            if rebid.special:
+                                est.min_hcp, est.max_hcp = 0, 7
+                            elif rebid.level == 2 and rebid.strain == Suit.NT:
+                                est.min_hcp, est.max_hcp = 8, 9
+                            elif rebid.level == 3 and rebid.strain == Suit.NT:
+                                est.min_hcp, est.max_hcp = 10, 15
+                            elif rebid.level == 3 and rebid.strain == meaning.shows_suit:
+                                est.min_hcp, est.max_hcp = 8, 9
+                                est.known_suits[meaning.shows_suit] = 6
+                            elif rebid.level == 4 and rebid.strain == meaning.shows_suit:
+                                est.min_hcp, est.max_hcp = 10, 15
+                                est.known_suits[meaning.shows_suit] = 6
+                    elif meaning.convention == 'stayman':
+                        est.min_hcp = meaning.hcp_min
+                        est.max_hcp = 40
+                    elif meaning.convention == 'gerber':
+                        est.min_hcp = meaning.hcp_min
+                        est.max_hcp = 40
+                    elif meaning.convention == 'quantitative':
+                        est.min_hcp, est.max_hcp = meaning.hcp_min, meaning.hcp_max
+                        est.is_balanced = True
+                    elif meaning.convention == 'natural' and meaning.hcp_max < 40:
+                        est.min_hcp = meaning.hcp_min
+                        est.max_hcp = meaning.hcp_max
+                        if meaning.is_balanced is not None:
+                            est.is_balanced = meaning.is_balanced
+                        if meaning.shows_suit is not None:
+                            est.known_suits[meaning.shows_suit] = (
+                                meaning.shows_length_min or 4)
+                    else:
+                        applied = False
+                    if applied:
+                        # Also register partner raising our suit in later bids
+                        my_strain = my_bids_here[0].strain
+                        for pb in partner_bids[1:]:
+                            if not pb.special and pb.strain == my_strain:
+                                est.known_suits[my_strain] = max(
+                                    est.known_suits.get(my_strain, 0), 3)
+                        return est
+
             if first.level == 1 and first.strain == Suit.NT:
                 est.min_hcp, est.max_hcp = 6, 10  # 1NT response
                 est.is_balanced = True
@@ -422,18 +661,49 @@ class StateMachineBidder:
 
     def _respond_to_1nt(self, hand: List[Card], h: int,
                         valid: list) -> Bid:
-        # 0-7: pass
+        shape = hand_shape(hand)
+        h_len = shape.length(Suit.H)
+        s_len = shape.length(Suit.S)
+
+        # Gerber 4C: 18+ with no 5-card major (pure slam try).
+        # 16-17 uses quantitative 4NT (handled at the bottom).
+        if (self.params.use_gerber and h >= self.params.gerber_min_hcp + 2
+                and h_len < 5 and s_len < 5):
+            b = self._best_valid(4, Suit.C, valid)
+            if b:
+                return b
+
+        # Jacoby Transfer with 5+ card major (any strength).
+        if self.params.use_jacoby_transfers:
+            # 5-5 majors: transfer to spades first (then rebid hearts)
+            if s_len >= 5 and s_len >= h_len:
+                b = self._best_valid(2, Suit.H, valid)  # transfer to spades
+                if b:
+                    return b
+            if h_len >= 5:
+                b = self._best_valid(2, Suit.D, valid)  # transfer to hearts
+                if b:
+                    return b
+
+        # Stayman with a 4-card major, 8+ HCP, no 5-card major.
+        if (self.params.use_stayman
+                and h >= self.params.stayman_min_hcp
+                and (h_len == 4 or s_len == 4)
+                and h_len < 5 and s_len < 5):
+            b = self._best_valid(2, Suit.C, valid)
+            if b:
+                return b
+
+        # Natural NT bidding
         if h <= self.params.respond_1nt_pass_max:
             return PASS
-        # 8-9: 2NT (invitational)
         if h <= self.params.respond_1nt_inv_max:
             b = self._best_valid(2, Suit.NT, valid)
             return b if b else PASS
-        # 10-15: 3NT
         if h <= self.params.respond_1nt_game_max:
             b = self._best_valid(3, Suit.NT, valid)
             return b if b else PASS
-        # 16+: 4NT (quantitative slam invite)
+        # 16+: quantitative 4NT slam invite
         b = self._best_valid(4, Suit.NT, valid)
         return b if b else self._best_valid(3, Suit.NT, valid) or PASS
 
@@ -559,6 +829,52 @@ class StateMachineBidder:
 
         my_opening = my_bids[0]
         partner_resp = partner_bids[0]
+
+        # Case: partner opened NT, I made a convention bid, partner answered,
+        # now I must rebid. Phase dispatch lands here when len(my)==1 and
+        # len(partner)>=2 because of the misnamed OPENER_REBID bucket.
+        if (not partner_resp.special and partner_resp.strain == Suit.NT
+                and partner_resp.level in (1, 2)
+                and not my_opening.special
+                and len(my_bids) == 1 and len(partner_bids) >= 2):
+            if partner_resp.level == 1:
+                meaning = interpret_response_to_1nt(my_opening, self.params)
+            else:
+                meaning = self._interpret_response_to_2nt(my_opening)
+            if meaning.is_transfer:
+                r = self._rebid_after_transfer(
+                    hand, h, shape, meaning, partner_bids, valid)
+                if r is not None:
+                    return r
+            elif meaning.convention == 'stayman':
+                r = self._rebid_after_stayman(
+                    hand, h, shape, partner_bids, valid)
+                if r is not None:
+                    return r
+            elif meaning.convention == 'gerber':
+                r = self._rebid_after_gerber(
+                    hand, h, shape, partner_bids, valid)
+                if r is not None:
+                    return r
+
+        # Convention completion: if I opened 1NT/2NT and partner's first
+        # response was Stayman/transfer/Gerber/quantitative, answer it.
+        if (not my_opening.special and len(partner_bids) == 1
+                and not partner_resp.special):
+            opened_1nt = (my_opening.level == 1
+                          and my_opening.strain == Suit.NT)
+            opened_2nt = (my_opening.level == 2
+                          and my_opening.strain == Suit.NT)
+            if opened_1nt or opened_2nt:
+                if opened_1nt:
+                    meaning = interpret_response_to_1nt(partner_resp, self.params)
+                else:
+                    meaning = self._interpret_response_to_2nt(partner_resp)
+                result = self._complete_nt_convention(
+                    hand, h, shape, meaning, partner_resp, valid)
+                if result is not None:
+                    return result
+
         fit = self._detected_fit(my_bids, partner_bids, hand)
         est = self._estimate_partner(partner_bids, calls, dealer)
         combined_min = h + est.min_hcp
@@ -694,6 +1010,146 @@ class StateMachineBidder:
     # RESPONDER REBID
     # ------------------------------------------------------------------
 
+    def _rebid_after_transfer(self, hand: List[Card], h: int,
+                               shape: HandShape, meaning,
+                               partner_bids: List[Bid],
+                               valid: list) -> Optional[Bid]:
+        """Responder's rebid after 1NT/2NT - [transfer] - [completion]."""
+        target = meaning.shows_suit
+        my_len = suit_length(hand, target)
+        completion = partner_bids[1] if len(partner_bids) >= 2 else None
+        super_accepted = (completion is not None
+                          and not completion.special
+                          and completion.strain == target
+                          and completion.level >= (partner_bids[0].level + 1))
+
+        # Minimum (0-7): sign off.  Pass the completion at the 2-level.
+        if h <= self.params.respond_1nt_pass_max:
+            # If partner super-accepted (3M) and we have a 6th trump + some
+            # values, go to game; otherwise pass the 3-level completion.
+            if super_accepted and my_len >= 6 and h >= 6:
+                b = self._best_valid(4, target, valid)
+                if b:
+                    return b
+            return PASS
+
+        # Invitational (8-9)
+        if h <= self.params.respond_1nt_inv_max:
+            if super_accepted:
+                # Partner already accepted the invite — go to game.
+                b = self._best_valid(4, target, valid)
+                if b:
+                    return b
+            if my_len >= 6:
+                b = self._best_valid(3, target, valid)
+                if b:
+                    return b
+            # 5 trumps: invite with 2NT so partner picks trump/NT.
+            b = self._best_valid(2, Suit.NT, valid)
+            if b:
+                return b
+            return PASS
+
+        # Game values (10-15)
+        if h <= self.params.respond_1nt_game_max:
+            if my_len >= 6:
+                b = self._best_valid(4, target, valid)
+                if b:
+                    return b
+            # 5 trumps: 3NT and let partner pick strain
+            b = self._best_valid(3, Suit.NT, valid)
+            if b:
+                return b
+            return PASS
+
+        # Slam values (16+): Gerber 4C to check aces, else 4NT quantitative
+        if self.params.use_gerber:
+            b = self._best_valid(4, Suit.C, valid)
+            if b:
+                return b
+        b = self._best_valid(4, Suit.NT, valid)
+        if b:
+            return b
+        b = self._best_valid(4, target, valid)
+        return b if b else PASS
+
+    def _rebid_after_stayman(self, hand: List[Card], h: int,
+                              shape: HandShape, partner_bids: List[Bid],
+                              valid: list) -> Optional[Bid]:
+        """Responder's rebid after 1NT/2NT - 2C/3C - [opener's answer]."""
+        reply = partner_bids[1] if len(partner_bids) >= 2 else None
+        if reply is None or reply.special:
+            return PASS
+
+        fit_major = None
+        if reply.strain == Suit.H and shape.length(Suit.H) >= 4:
+            fit_major = Suit.H
+        elif reply.strain == Suit.S and shape.length(Suit.S) >= 4:
+            fit_major = Suit.S
+
+        # Fit found in a major
+        if fit_major is not None:
+            if h <= self.params.respond_1nt_inv_max:  # 8-9: invite
+                b = self._best_valid(3, fit_major, valid)
+                return b if b else PASS
+            if h <= self.params.respond_1nt_game_max:  # 10-15: game
+                b = self._best_valid(4, fit_major, valid)
+                return b if b else PASS
+            # 16+: slam try via Gerber
+            if self.params.use_gerber:
+                b = self._best_valid(4, Suit.C, valid)
+                if b:
+                    return b
+            b = self._best_valid(4, fit_major, valid)
+            return b if b else PASS
+
+        # No fit — settle in NT at the appropriate level
+        if h <= self.params.respond_1nt_inv_max:
+            b = self._best_valid(2, Suit.NT, valid)
+            return b if b else PASS
+        if h <= self.params.respond_1nt_game_max:
+            b = self._best_valid(3, Suit.NT, valid)
+            return b if b else PASS
+        # 16+
+        if self.params.use_gerber:
+            b = self._best_valid(4, Suit.C, valid)
+            if b:
+                return b
+        b = self._best_valid(3, Suit.NT, valid)
+        return b if b else PASS
+
+    def _rebid_after_gerber(self, hand: List[Card], h: int,
+                             shape: HandShape, partner_bids: List[Bid],
+                             valid: list) -> Optional[Bid]:
+        """Responder's rebid after 1NT - 4C - [ace response]."""
+        reply = partner_bids[1] if len(partner_bids) >= 2 else None
+        if reply is None or reply.special or reply.level != 4:
+            return PASS
+        partner_aces = gerber_aces_from_response(reply)
+        if partner_aces is None:
+            return PASS
+        my_aces = sum(1 for c in hand if c.rank == Rank.ACE)
+        # 4D is ambiguous (0 or 4); infer from combined strength
+        if reply.strain == Suit.D:
+            # partner opened 1NT 15-17; 4 aces would be rare but possible
+            partner_aces = 4 if (h + 15) < 30 else 0  # weak heuristic
+        total_aces = my_aces + partner_aces
+        # Missing two aces: sign off in 4NT
+        if total_aces <= 2:
+            b = self._best_valid(4, Suit.NT, valid)
+            return b if b else PASS
+        # 3 aces: small slam in NT
+        if total_aces == 3:
+            b = self._best_valid(6, Suit.NT, valid)
+            return b if b else (self._best_valid(4, Suit.NT, valid) or PASS)
+        # 4 aces: 6NT or bigger based on HCP
+        if h >= 20:
+            b = self._best_valid(7, Suit.NT, valid)
+            if b:
+                return b
+        b = self._best_valid(6, Suit.NT, valid)
+        return b if b else PASS
+
     def _bid_responder_rebid(self, obs: dict) -> Bid:
         hand = obs['hand']
         valid = obs['valid_calls']
@@ -703,6 +1159,37 @@ class StateMachineBidder:
         shape = hand_shape(hand)
         my_bids = self._my_bids(calls, dealer)
         partner_bids = self._partner_bids(calls, dealer)
+
+        # Post-convention responder rebid: partner opened 1NT/2NT, I used
+        # Stayman/transfer/Gerber, partner answered, and now I must sign off
+        # or invite or bid game. The generic fit+combined logic below can
+        # mis-raise past the current contract, so handle this explicitly.
+        if my_bids and partner_bids and len(partner_bids) >= 2:
+            p_first = partner_bids[0]
+            my_first = my_bids[0]
+            if (not p_first.special and not my_first.special
+                    and p_first.strain == Suit.NT
+                    and p_first.level in (1, 2)):
+                if p_first.level == 1:
+                    meaning = interpret_response_to_1nt(my_first, self.params)
+                else:
+                    meaning = self._interpret_response_to_2nt(my_first)
+                if meaning.is_transfer:
+                    r = self._rebid_after_transfer(
+                        hand, h, shape, meaning, partner_bids, valid)
+                    if r is not None:
+                        return r
+                elif meaning.convention == 'stayman':
+                    r = self._rebid_after_stayman(
+                        hand, h, shape, partner_bids, valid)
+                    if r is not None:
+                        return r
+                elif meaning.convention == 'gerber':
+                    r = self._rebid_after_gerber(
+                        hand, h, shape, partner_bids, valid)
+                    if r is not None:
+                        return r
+
         fit = self._detected_fit(my_bids, partner_bids, hand)
         est = self._estimate_partner(partner_bids, calls, dealer)
         partner_est = est.min_hcp + int((est.max_hcp - est.min_hcp) * self.params.partner_est_fraction)
