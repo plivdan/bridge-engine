@@ -156,6 +156,9 @@ class BridgeParams:
     hold_up_max_combined: int = 7    # duck if our side has <= N in the suit
     hold_up_max_rounds: int = 2      # only duck in the first N rounds
 
+    # ── Advanced play (Batch 11) ──────────────────────────────────
+    use_unblocking: bool = True
+
     # ── Fit detection ─────────────────────────────────────────────
     fit_min_support_major: int = 3
     fit_min_support_general: int = 4

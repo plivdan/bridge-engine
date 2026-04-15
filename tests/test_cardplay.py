@@ -804,6 +804,76 @@ else:
     check(True, "constrained deal: rejection budget exhausted (acceptable)")
 
 
+# ── UNBLOCKING (Batch 11) ────────────────────────────────────────
+section("UNBLOCKING UNDER PARTNER'S HIGH LEAD")
+
+# Partner (W, seat 3) leads A♥. I (E, seat 1) hold Kx doubleton. The
+# K would block partner's long suit if I keep it, so throw it under
+# the ace.
+hands_unblock = {
+    0: [Card(Rank.ACE, Suit.S), Card(Rank.KING, Suit.S),
+        Card(Rank.QUEEN, Suit.S), Card(Rank.JACK, Suit.S),
+        Card(Rank.TWO, Suit.H), Card(Rank.FIVE, Suit.D),
+        Card(Rank.SIX, Suit.D), Card(Rank.SEVEN, Suit.C)],  # declarer
+    1: [Card(Rank.FIVE, Suit.S), Card(Rank.SIX, Suit.S),
+        Card(Rank.KING, Suit.H), Card(Rank.THREE, Suit.H),
+        Card(Rank.EIGHT, Suit.D), Card(Rank.NINE, Suit.D),
+        Card(Rank.TEN, Suit.D), Card(Rank.TWO, Suit.C)],  # E: Kx hearts
+    2: [Card(Rank.SEVEN, Suit.S), Card(Rank.EIGHT, Suit.S),
+        Card(Rank.FOUR, Suit.H), Card(Rank.FIVE, Suit.H),
+        Card(Rank.JACK, Suit.D), Card(Rank.QUEEN, Suit.D),
+        Card(Rank.KING, Suit.D), Card(Rank.ACE, Suit.D)],  # dummy
+    3: [Card(Rank.TWO, Suit.S), Card(Rank.THREE, Suit.S),
+        Card(Rank.ACE, Suit.H), Card(Rank.QUEEN, Suit.H),
+        Card(Rank.JACK, Suit.H), Card(Rank.TEN, Suit.H),
+        Card(Rank.NINE, Suit.H), Card(Rank.EIGHT, Suit.H)],  # W: 6 hearts
+}
+
+ps_ub = make_ps(hands_unblock, trump=Suit.NT, declarer=0, leader=3)
+# W leads A♥, N (declarer) plays low. Now E's turn (3rd hand).
+with contextlib.redirect_stdout(io.StringIO()):
+    ps_ub.play_card(3, Card(Rank.ACE, Suit.H))
+    ps_ub.play_card(0, Card(Rank.TWO, Suit.H))
+
+cp_ub = StateMachineCardPlayer(1)
+obs = make_play_obs(ps_ub, 1)
+card = cp_ub.play_card(obs)
+check(card == Card(Rank.KING, Suit.H),
+      f"Kx doubleton under partner's A: unblock the K (got {card})")
+
+# Sanity: three-card holding (not doubleton) does NOT unblock — signals
+# attitude instead.
+hands_no_ub = {
+    0: [Card(Rank.ACE, Suit.S), Card(Rank.KING, Suit.S),
+        Card(Rank.QUEEN, Suit.S), Card(Rank.TWO, Suit.H),
+        Card(Rank.FIVE, Suit.D), Card(Rank.SIX, Suit.D),
+        Card(Rank.SEVEN, Suit.D), Card(Rank.EIGHT, Suit.C)],
+    1: [Card(Rank.FIVE, Suit.S), Card(Rank.SIX, Suit.S),
+        Card(Rank.KING, Suit.H), Card(Rank.THREE, Suit.H),
+        Card(Rank.SIX, Suit.H), Card(Rank.EIGHT, Suit.D),
+        Card(Rank.NINE, Suit.D), Card(Rank.TWO, Suit.C)],  # Kxx hearts
+    2: [Card(Rank.SEVEN, Suit.S), Card(Rank.EIGHT, Suit.S),
+        Card(Rank.FOUR, Suit.H), Card(Rank.FIVE, Suit.H),
+        Card(Rank.JACK, Suit.D), Card(Rank.QUEEN, Suit.D),
+        Card(Rank.KING, Suit.D), Card(Rank.ACE, Suit.D)],
+    3: [Card(Rank.TWO, Suit.S), Card(Rank.THREE, Suit.S),
+        Card(Rank.ACE, Suit.H), Card(Rank.QUEEN, Suit.H),
+        Card(Rank.JACK, Suit.H), Card(Rank.TEN, Suit.H),
+        Card(Rank.NINE, Suit.H), Card(Rank.SEVEN, Suit.H)],
+}
+ps_no_ub = make_ps(hands_no_ub, trump=Suit.NT, declarer=0, leader=3)
+with contextlib.redirect_stdout(io.StringIO()):
+    ps_no_ub.play_card(3, Card(Rank.ACE, Suit.H))
+    ps_no_ub.play_card(0, Card(Rank.TWO, Suit.H))
+
+cp_no_ub = StateMachineCardPlayer(1)
+obs = make_play_obs(ps_no_ub, 1)
+card = cp_no_ub.play_card(obs)
+check(card.suit == Suit.H, "Kxx: follows hearts")
+check(card.rank != Rank.KING,
+      f"Kxx NOT doubleton: don't unblock (got {card})")
+
+
 # ── SUMMARY ──────────────────────────────────────────────────────
 section("SUMMARY")
 total = PASS_COUNT + FAIL_COUNT

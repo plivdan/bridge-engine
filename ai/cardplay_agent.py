@@ -905,6 +905,12 @@ class StateMachineCardPlayer:
 
             # Partner winning: non-contesting, carry a signal.
             if partner_winning:
+                # Unblocking takes priority over signaling: if our higher
+                # card would block partner's suit establishment, dump it.
+                if self.params.use_unblocking and partner_led:
+                    unblock = self._try_unblock(following, hand, led, trick)
+                    if unblock is not None:
+                        return unblock
                 return self._signal_card(following, led, hand, partner_led)
 
             # Try to win cheaply
@@ -936,6 +942,38 @@ class StateMachineCardPlayer:
 
         # Discard: signal attitude on a suit we want led.
         return self._discard_with_signal(valid, hand, trump_suit)
+
+    def _try_unblock(self, following: List[Card], hand: List[Card],
+                      led_suit: Suit, trick: Trick) -> Optional[Card]:
+        """Play a high card under partner's winner to avoid blocking the suit.
+
+        Classic scenario: partner leads A from AKxxxx, I hold Kx. Playing
+        low leaves me stuck with the K next round, blocking communications.
+        Throwing the K under the A keeps the suit running.
+
+        Rule: I hold exactly 2 cards in the led suit and my higher card is
+        K or A. If partner's led card is higher than my second card, dump
+        the high card.
+        """
+        suit_cards = sorted([c for c in hand if c.suit == led_suit],
+                             key=lambda c: c.rank, reverse=True)
+        if len(suit_cards) != 2:
+            return None
+        high, low = suit_cards
+        if high.rank < Rank.KING:
+            return None
+        # Partner's lead is the only card in the trick from partner's seat;
+        # grab the first card (leader's card).
+        if not trick or not trick.cards:
+            return None
+        leader_card = trick.cards.get(trick.leader)
+        if leader_card is None or leader_card.suit != led_suit:
+            return None
+        if leader_card.rank <= low.rank:
+            return None
+        if high not in following:
+            return None
+        return high
 
     def _signal_card(self, following: List[Card], led_suit: Suit,
                       hand: List[Card], partner_led: bool) -> Card:
