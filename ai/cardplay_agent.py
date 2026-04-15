@@ -142,7 +142,9 @@ class CardTracker:
     """
 
     def __init__(self, my_hand: List[Card], dummy_hand: Optional[List[Card]],
-                 my_seat: int, dummy_seat: int):
+                 my_seat: int, dummy_seat: int,
+                 calls: Optional[list] = None, dealer: Optional[int] = None,
+                 params=None):
         self.my_seat = my_seat
         self.dummy_seat = dummy_seat
         self.played: Set[Card] = set()
@@ -155,16 +157,21 @@ class CardTracker:
             known |= set(dummy_hand)
         self.unknown = all_cards - known
 
-        # Count tracking: remaining cards per seat per suit (-1 = unknown)
-        # For known hands (my_seat, dummy_seat) we know exactly.
-        # For opponents, we track only total remaining and voids.
+        # Count tracking
         self.opp_seats = [s for s in range(4) if s != my_seat and s != dummy_seat]
         self.opp_remaining: Dict[int, int] = {s: 13 for s in self.opp_seats}
         self.cards_played_by: Dict[int, List[Card]] = {i: [] for i in range(4)}
 
-        # Honor placement: cards an opponent likely does NOT hold
-        # (inferred when they play low following suit with a winning card available)
+        # Honor placement
         self.likely_missing: Dict[int, Set[Card]] = {s: set() for s in range(4)}
+
+        # Auction-derived constraints (Batch 9). Always populated; falls
+        # back to unbounded when calls are not supplied.
+        from .inference import infer_from_auction, SeatConstraints
+        if calls is not None and dealer is not None:
+            self.constraints = infer_from_auction(calls, dealer, params)
+        else:
+            self.constraints = {s: SeatConstraints() for s in range(4)}
 
     def update_trick(self, trick: Trick):
         """Record a completed trick and infer information."""
@@ -331,6 +338,9 @@ class StateMachineCardPlayer:
                 dummy_hand=dummy_hand,
                 my_seat=self.seat,
                 dummy_seat=dummy_seat,
+                calls=obs.get('calls', []),
+                dealer=obs.get('dealer', 0),
+                params=self.params,
             )
             self._last_trick_count = 0
             self.plan = None
