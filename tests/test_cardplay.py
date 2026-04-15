@@ -639,6 +639,74 @@ check(card.rank == Rank.FIVE,
       f"discourage with no honor, 3-card holding: play lowest (got {card})")
 
 
+# ── DECLARER HOLD-UP IN NT (Batch 8) ─────────────────────────────
+section("DECLARER HOLD-UP IN NT")
+
+# N declarer in NT. E has 4 hearts and leads the K; our side has Ax
+# opposite xx (combined 4). Declarer should duck (play low) on round 1.
+hands_holdup = {
+    0: [Card(Rank.ACE, Suit.H), Card(Rank.TWO, Suit.H),
+        Card(Rank.ACE, Suit.S), Card(Rank.ACE, Suit.D),
+        Card(Rank.ACE, Suit.C)],  # N (declarer): Ax in hearts
+    1: [Card(Rank.KING, Suit.H), Card(Rank.QUEEN, Suit.H),
+        Card(Rank.JACK, Suit.H), Card(Rank.NINE, Suit.H),
+        Card(Rank.TWO, Suit.S)],  # E: 4 hearts KQJ9
+    2: [Card(Rank.THREE, Suit.H), Card(Rank.FOUR, Suit.H),
+        Card(Rank.KING, Suit.C), Card(Rank.KING, Suit.S),
+        Card(Rank.KING, Suit.D)],  # S (dummy): xx in hearts
+    3: [Card(Rank.TEN, Suit.H), Card(Rank.FIVE, Suit.H),
+        Card(Rank.QUEEN, Suit.C), Card(Rank.QUEEN, Suit.D),
+        Card(Rank.QUEEN, Suit.S)],  # W
+}
+
+ps_holdup = make_ps(hands_holdup, trump=Suit.NT, declarer=0, leader=1)
+# Order E→S(dummy)→W→N. Declarer (N, seat 0) plays dummy's card when it
+# is dummy's turn — engine expects actor=declarer for dummy plays.
+with contextlib.redirect_stdout(io.StringIO()):
+    ps_holdup.play_card(1, Card(Rank.KING, Suit.H))
+    ps_holdup.play_card(0, Card(Rank.THREE, Suit.H))  # declarer plays dummy's low
+    ps_holdup.play_card(3, Card(Rank.FIVE, Suit.H))   # W low
+
+cp_hu = StateMachineCardPlayer(0)
+obs = make_play_obs(ps_holdup, 0)
+card = cp_hu.play_card(obs)
+# Hold-up: duck round 1 rather than cash the ace.
+check(card == Card(Rank.TWO, Suit.H),
+      f"hold-up in NT: duck round 1 (got {card})")
+
+# Sanity: on the same position but with a 6-level combined holding
+# (Axxx opposite xx = 6), hold-up still fires but eventually the
+# ace will come out. Here we instead verify that when the ace is
+# NOT our only winner (we have the K), we do take cheaply rather
+# than ducking forever.
+hands_no_holdup = {
+    0: [Card(Rank.ACE, Suit.H), Card(Rank.KING, Suit.H),
+        Card(Rank.ACE, Suit.S), Card(Rank.ACE, Suit.D),
+        Card(Rank.ACE, Suit.C)],  # N has AK in hearts
+    1: [Card(Rank.QUEEN, Suit.H), Card(Rank.JACK, Suit.H),
+        Card(Rank.TEN, Suit.H), Card(Rank.NINE, Suit.H),
+        Card(Rank.TWO, Suit.S)],  # E leads Q
+    2: [Card(Rank.THREE, Suit.H), Card(Rank.FOUR, Suit.H),
+        Card(Rank.KING, Suit.C), Card(Rank.KING, Suit.S),
+        Card(Rank.KING, Suit.D)],
+    3: [Card(Rank.FIVE, Suit.H), Card(Rank.SIX, Suit.H),
+        Card(Rank.QUEEN, Suit.C), Card(Rank.QUEEN, Suit.D),
+        Card(Rank.QUEEN, Suit.S)],
+}
+ps_no_hu = make_ps(hands_no_holdup, trump=Suit.NT, declarer=0, leader=1)
+with contextlib.redirect_stdout(io.StringIO()):
+    ps_no_hu.play_card(1, Card(Rank.QUEEN, Suit.H))
+    ps_no_hu.play_card(0, Card(Rank.THREE, Suit.H))  # declarer plays dummy
+    ps_no_hu.play_card(3, Card(Rank.FIVE, Suit.H))
+
+cp_no_hu = StateMachineCardPlayer(0)
+obs = make_play_obs(ps_no_hu, 0)
+card = cp_no_hu.play_card(obs)
+# Can win with the K (non-ace winner) — take cheaply, don't hold up.
+check(card == Card(Rank.KING, Suit.H),
+      f"with K available: take cheaply (got {card})")
+
+
 # ── SUMMARY ──────────────────────────────────────────────────────
 section("SUMMARY")
 total = PASS_COUNT + FAIL_COUNT

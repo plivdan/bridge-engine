@@ -146,6 +146,11 @@ class BridgeParams:
     # "Honor" threshold for encouragement (J=11 is mid; Q=12 stricter)
     attitude_encourage_min_rank: int = 12
 
+    # ── Declarer technique (Batch 8) ──────────────────────────────
+    use_hold_up_play: bool = True
+    hold_up_max_combined: int = 7    # duck if our side has <= N in the suit
+    hold_up_max_rounds: int = 2      # only duck in the first N rounds
+
     # ── Fit detection ─────────────────────────────────────────────
     fit_min_support_major: int = 3
     fit_min_support_general: int = 4

@@ -772,6 +772,18 @@ class StateMachineCardPlayer:
             if partner_winning:
                 # Play low — partner is winning
                 return min(following, key=lambda c: c.rank)
+
+            # Hold-up play: in NT, when opps lead a suit and our only
+            # winner is the ace, duck the first rounds to break their
+            # communications.
+            if (trump_suit is None
+                    and self.params.use_hold_up_play):
+                held_up = self._try_hold_up(
+                    obs, following, trick, trump_suit,
+                    declarer, dummy_seat)
+                if held_up is not None:
+                    return held_up
+
             # Try to win cheaply
             winning = [c for c in following
                        if self._beats_current(c, trick, trump_suit)]
@@ -993,6 +1005,56 @@ class StateMachineCardPlayer:
                 # First trump beats any non-trump
                 best_c, best_p = c, p
         return best_p
+
+    def _try_hold_up(self, obs: dict, following: List[Card],
+                      trick: Trick, trump_suit: Optional[Suit],
+                      declarer: int, dummy_seat: int) -> Optional[Card]:
+        """Duck a round in NT when the only winner in the led suit is our
+        ace and our side's combined holding is short enough that ducking
+        exhausts one opponent.
+
+        Returns the card to duck with, or None to fall through to normal
+        'try to win cheaply' logic.
+        """
+        if trick is None:
+            return None
+        led = trick.led_suit()
+        leader = trick.leader
+        our_side = {declarer, dummy_seat}
+        if leader in our_side:
+            return None  # our side led — not a hold-up scenario
+
+        # Our side's combined length in the led suit
+        hand = obs.get('hand', []) or []
+        dummy = obs.get('dummy_hand', []) or []
+        declarer_len = sum(1 for c in hand if c.suit == led)
+        dummy_len = sum(1 for c in dummy if c.suit == led)
+        combined = declarer_len + dummy_len
+        if combined > self.params.hold_up_max_combined:
+            return None
+
+        # How many rounds of this suit have the defenders already cashed?
+        completed = obs.get('completed_tricks', []) or []
+        rounds = sum(1 for t in completed
+                     if t.cards and t.led_suit() == led)
+        if rounds >= self.params.hold_up_max_rounds:
+            return None
+
+        # Duck only if the ace is our sole winner in this suit.
+        winning_now = [c for c in following
+                       if self._beats_current(c, trick, trump_suit)]
+        if not winning_now:
+            return None
+        non_ace_winning = [c for c in winning_now if c.rank < Rank.ACE]
+        if non_ace_winning:
+            return None  # we can win without using the ace — just take it
+
+        # Must have at least one non-ace card to duck with.
+        non_ace = [c for c in following if c.rank < Rank.ACE]
+        if not non_ace:
+            return None
+
+        return min(non_ace, key=lambda c: c.rank)
 
     def _beats_current(self, card: Card, trick: Trick,
                        trump: Optional[Suit]) -> bool:
