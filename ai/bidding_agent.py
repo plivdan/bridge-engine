@@ -245,6 +245,28 @@ class StateMachineBidder:
                     return b
             return PASS
 
+        # Natural 2NT invitational raise of our 1NT opening. Decide
+        # accept vs. decline straight away — falling through to the
+        # generic "show a new suit" rebid logic produces nonsense bids
+        # like 3♦ here, since by this point the 2-level in NT is already
+        # taken by partner.
+        if (meaning.convention == 'natural'
+                and meaning.is_invitational
+                and partner_call.strain == Suit.NT):
+            if h >= self.params.open_1nt_max:
+                b = self._best_valid(3, Suit.NT, valid)
+                if b:
+                    return b
+            return PASS
+
+        # Natural 3NT sign-off from responder (10-15 HCP opposite 1NT).
+        # Always pass — game is reached, no further search.
+        if (meaning.convention == 'natural'
+                and not meaning.is_invitational
+                and partner_call.level == 3
+                and partner_call.strain == Suit.NT):
+            return PASS
+
         return None
 
     # ------------------------------------------------------------------
