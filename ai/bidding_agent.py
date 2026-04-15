@@ -117,14 +117,21 @@ class StateMachineBidder:
         after_2nt = (my_first.level == 2 and my_first.strain == Suit.NT)
         after_1_major = (my_first.level == 1
                          and my_first.strain in (Suit.H, Suit.S))
+        after_2c = (my_first.level == 2
+                    and my_first.strain == Suit.C)
 
-        if not (after_1nt or after_2nt or after_1_major):
+        if not (after_1nt or after_2nt or after_1_major or after_2c):
             return partner_bids
 
         out: List[Bid] = []
         for i, b in enumerate(partner_bids):
             if i != 0 or b.special:
                 out.append(b)
+                continue
+            # i == 0, not special.
+            # After our strong 2C opening, partner's 2D is an artificial
+            # "waiting" bid that says nothing about diamond length.
+            if (after_2c and b.level == 2 and b.strain == Suit.D):
                 continue
             if after_1nt:
                 meaning = interpret_response_to_1nt(b, self.params)
