@@ -103,6 +103,13 @@ class BridgeParams:
     splinter_min_hcp: int = 13
     splinter_max_hcp: int = 15
 
+    # ── Competitive doubles (Batch 3) ─────────────────────────────
+    use_negative_doubles: bool = True
+    use_support_doubles: bool = True
+    negative_double_min_hcp_1lvl: int = 6
+    negative_double_min_hcp_2lvl: int = 8
+    negative_double_max_overcall_level: int = 2
+
     # ── Fit detection ─────────────────────────────────────────────
     fit_min_support_major: int = 3
     fit_min_support_general: int = 4

@@ -304,6 +304,180 @@ class StateMachineBidder:
         return b if b else None
 
     # ------------------------------------------------------------------
+    # Competitive doubles (Batch 3): negative, support
+    # ------------------------------------------------------------------
+
+    def _opp_overcall_after(self, calls: list, dealer: int,
+                             after_index: int) -> Optional[Bid]:
+        """Return the first natural opp bid strictly after `after_index`."""
+        for i in range(after_index + 1, len(calls)):
+            c = calls[i]
+            if (not c.special
+                    and (dealer + i) % 4 % 2 != self.seat % 2):
+                return c
+        return None
+
+    def _try_negative_double(self, hand: List[Card], h: int,
+                              shape: HandShape, opening: Bid,
+                              valid: list) -> Optional[Bid]:
+        """Consider a negative double after partner's 1-of-suit opening
+        and an RHO overcall. Shows 4+ in an unbid major with values."""
+        if not self.params.use_negative_doubles or DOUBLE not in valid:
+            return None
+        calls = self._current_obs_calls
+        dealer = self._current_dealer
+        last_opp = self._last_opp_bid(calls, dealer)
+        if last_opp is None or last_opp.special:
+            return None
+        if last_opp.level > self.params.negative_double_max_overcall_level:
+            return None
+
+        min_hcp = (self.params.negative_double_min_hcp_2lvl
+                   if last_opp.level == 2
+                   else self.params.negative_double_min_hcp_1lvl)
+        if h < min_hcp:
+            return None
+
+        bid_suits = {opening.strain, last_opp.strain}
+        unbid_majors = [s for s in (Suit.H, Suit.S) if s not in bid_suits]
+        has_4_unbid_major = any(shape.length(s) >= 4 for s in unbid_majors)
+        if not has_4_unbid_major:
+            return None
+
+        # If we have a 5-card unbid major and enough HCP to bid it
+        # naturally, prefer the natural bid (shows the 5th card).
+        for s in unbid_majors:
+            if shape.length(s) >= 5:
+                needed = self.params.respond_new_2_min if last_opp.level == 2 \
+                    else self.params.respond_min_hcp
+                if h >= needed:
+                    return None
+
+        return DOUBLE
+
+    def _try_support_double(self, hand: List[Card], h: int,
+                             shape: HandShape, my_opening: Bid,
+                             partner_resp: Bid, valid: list) -> Optional[Bid]:
+        """Consider a support double after partner's 1-level response and
+        an opp overcall. Shows exactly 3-card support for partner's suit."""
+        if not self.params.use_support_doubles or DOUBLE not in valid:
+            return None
+        if (my_opening.special or partner_resp.special
+                or my_opening.level != 1 or partner_resp.level != 1):
+            return None
+        partner_suit = partner_resp.strain
+        if partner_suit == my_opening.strain or partner_suit == Suit.NT:
+            return None
+
+        calls = self._current_obs_calls
+        dealer = self._current_dealer
+        # Locate partner's response in the call stream
+        partner_idx = None
+        for i, c in enumerate(calls):
+            if (not c.special and (dealer + i) % 4 == (self.seat + 2) % 4
+                    and c.level == partner_resp.level
+                    and c.strain == partner_resp.strain):
+                partner_idx = i
+                break
+        if partner_idx is None:
+            return None
+        opp_after = self._opp_overcall_after(calls, dealer, partner_idx)
+        if opp_after is None or opp_after.level > 2:
+            return None
+        if suit_length(hand, partner_suit) != 3:
+            return None
+        return DOUBLE
+
+    def _respond_to_partner_negative_double(self, hand: List[Card], h: int,
+                                             shape: HandShape,
+                                             valid: list) -> Optional[Bid]:
+        """I opened, RHO overcalled, partner negative-doubled. Bid the
+        unbid major with 3+ support, otherwise fall through."""
+        calls = self._current_obs_calls
+        dealer = self._current_dealer
+        my_bids = self._my_bids(calls, dealer)
+        if not my_bids:
+            return None
+        my_opening = my_bids[0]
+        last_opp = self._last_opp_bid(calls, dealer)
+        bid_suits = {my_opening.strain}
+        if last_opp is not None and not last_opp.special:
+            bid_suits.add(last_opp.strain)
+
+        for major in (Suit.H, Suit.S):
+            if major in bid_suits:
+                continue
+            if shape.length(major) < 3:
+                continue
+            if h >= 18:
+                b = self._best_valid(4, major, valid)
+                if b:
+                    return b
+            if h >= 15:
+                b = self._best_valid(3, major, valid)
+                if b:
+                    return b
+            b = self._best_valid(2, major, valid)
+            if b:
+                return b
+            break
+
+        # No unbid major we can raise; settle into NT with stoppers or
+        # rebid our own suit cheaply.
+        if h >= 15 and all_suits_stopped(hand):
+            b = self._best_valid(2, Suit.NT, valid)
+            if b:
+                return b
+        b = self._cheapest_in_suit(my_opening.strain, valid)
+        if b:
+            return b
+        return None
+
+    def _respond_to_partner_support_double(self, hand: List[Card], h: int,
+                                            shape: HandShape,
+                                            valid: list) -> Optional[Bid]:
+        """Partner (opener) support-doubled my 1-level response, promising
+        exactly 3-card support. I know the combined holding: pick a level."""
+        calls = self._current_obs_calls
+        dealer = self._current_dealer
+        my_bids = self._my_bids(calls, dealer)
+        if not my_bids:
+            return None
+        my_response = my_bids[0]
+        my_suit = my_response.strain
+        my_len = suit_length(hand, my_suit)
+
+        # Combined length: 3 (partner) + my_len.
+        if my_len >= 5:
+            # 8+-card fit
+            if h >= 12:
+                b = self._best_valid(4, my_suit, valid)
+                if b:
+                    return b
+            if h >= 8:
+                b = self._best_valid(3, my_suit, valid)
+                if b:
+                    return b
+            b = self._best_valid(2, my_suit, valid)
+            if b:
+                return b
+        else:
+            # Only 7-card fit; compete cautiously.
+            if h >= 14:
+                b = self._best_valid(3, my_suit, valid)
+                if b:
+                    return b
+        return None
+
+    def _partner_last_call_is_double(self, calls: list, dealer: int) -> bool:
+        """True if partner's most recent call was a double."""
+        partner_seat = (self.seat + 2) % 4
+        for i in range(len(calls) - 1, -1, -1):
+            if (dealer + i) % 4 == partner_seat:
+                return calls[i] == DOUBLE
+        return False
+
+    # ------------------------------------------------------------------
     # Roman Key Card Blackwood helpers (Batch 2)
     # ------------------------------------------------------------------
 
@@ -892,6 +1066,14 @@ class StateMachineBidder:
             if not c.special and (getattr(self, '_current_dealer', 0) + i) % 4 % 2 != self.seat % 2:
                 opp_suits.add(c.strain)
 
+        # Negative double: partner opened, RHO overcalled, I have 4+ in an
+        # unbid major with values. Tried before other responses because it
+        # neatly handles the 2-level overcall case where a 2-level new suit
+        # would otherwise require 10+ HCP.
+        neg_x = self._try_negative_double(hand, h, shape, opening, valid)
+        if neg_x is not None:
+            return neg_x
+
         # Major fit: raise partner's suit (not opponent's!)
         if strain in (Suit.H, Suit.S) and strain not in opp_suits:
             support = suit_length(hand, strain)
@@ -1001,6 +1183,21 @@ class StateMachineBidder:
         my_opening = my_bids[0]
         partner_resp = partner_bids[0]
 
+        # Case: partner (opener) support-doubled my 1-level response.
+        # My_bids is my response, partner_bids is partner's opening, the
+        # most recent partner call is X promising 3-card support for me.
+        if (len(my_bids) == 1 and not my_opening.special
+                and my_opening.level == 1
+                and my_opening.strain != Suit.NT
+                and self.params.use_support_doubles
+                and self._partner_last_call_is_double(calls, dealer)):
+            # Here my_opening is actually MY response (misnamed variable
+            # because of the shared rebid code path).
+            result = self._respond_to_partner_support_double(
+                hand, h, shape, valid)
+            if result is not None:
+                return result
+
         # Case: partner opened NT, I made a convention bid, partner answered,
         # now I must rebid. Phase dispatch lands here when len(my)==1 and
         # len(partner)>=2 because of the misnamed OPENER_REBID bucket.
@@ -1066,6 +1263,16 @@ class StateMachineBidder:
                         hand, h, shape, major, short, valid)
                     if result is not None:
                         return result
+
+        # Support double: I opened, partner responded a new suit at the
+        # 1-level, opp overcalled after partner's response. With exactly
+        # 3-card support for partner's suit, X instead of raising.
+        if (len(partner_bids) == 1 and not my_opening.special
+                and my_opening.level == 1):
+            support_x = self._try_support_double(
+                hand, h, shape, my_opening, partner_resp, valid)
+            if support_x is not None:
+                return support_x
 
         fit = self._detected_fit(my_bids, partner_bids, hand)
         est = self._estimate_partner(partner_bids, calls, dealer)
@@ -1483,10 +1690,22 @@ class StateMachineBidder:
         hand = obs['hand']
         valid = obs['valid_calls']
         h = hcp(hand)
+        shape = hand_shape(hand)
         calls = obs.get('calls', [])
         dealer = obs['dealer']
         my_bids = self._my_bids(calls, dealer)
         partner_bids = self._partner_bids(calls, dealer)
+
+        # If partner's last call was a double and we're in a
+        # negative-double scenario (I opened, opp overcalled, partner X'd),
+        # bid the unbid major partner promised.
+        if (self.params.use_negative_doubles and my_bids and not partner_bids
+                and self._partner_last_call_is_double(calls, dealer)):
+            result = self._respond_to_partner_negative_double(
+                hand, h, shape, valid)
+            if result is not None:
+                return result
+
         fit = self._detected_fit(my_bids, partner_bids, hand)
 
         if fit:

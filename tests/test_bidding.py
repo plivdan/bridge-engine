@@ -688,6 +688,155 @@ check(bid == make_bid(5, Suit.C),
       f"4NT by partner, 1 keycard -> 5C (got {bid})")
 
 
+# ── COMPETITIVE DOUBLES (Batch 3) ────────────────────────────────
+section("COMPETITIVE DOUBLES: NEGATIVE / SUPPORT")
+
+# Negative double: partner opened 1H, RHO 2C overcall, I have 4+ spades
+# and 8+ HCP → X.
+# AQxx S (6) + xx H (0) + Kxx D (3) + Qxxx C (2) = 11 HCP, 4 spades.
+hand_neg_x = _pad_hand(
+    [Card(Rank.ACE, Suit.S), Card(Rank.QUEEN, Suit.S),
+     Card(Rank.KING, Suit.D), Card(Rank.QUEEN, Suit.C)],
+    {Suit.S: 4, Suit.H: 2, Suit.D: 3, Suit.C: 4},
+)
+check(hcp(hand_neg_x) >= 8, f"neg_x hand HCP = {hcp(hand_neg_x)} (>=8)")
+check(hand_shape(hand_neg_x).length(Suit.S) == 4, "neg_x has 4 spades")
+
+calls_1h_2c = [make_bid(1, Suit.H), make_bid(2, Suit.C)]
+obs = make_obs(hand_neg_x, calls=calls_1h_2c, dealer=0, player=2)
+bid = resp.bid(obs)
+check(bid == DOUBLE,
+      f"1H - (2C), 8+ HCP + 4S -> X negative (got {bid})")
+
+# Same auction but 5-card spade → bid 2S naturally (not X)
+# AQxxx S + xx H + Kxx D + Qxx C = 10 HCP, 5 spades
+hand_5s = _pad_hand(
+    [Card(Rank.ACE, Suit.S), Card(Rank.QUEEN, Suit.S),
+     Card(Rank.JACK, Suit.S), Card(Rank.KING, Suit.D),
+     Card(Rank.QUEEN, Suit.C)],
+    {Suit.S: 5, Suit.H: 2, Suit.D: 3, Suit.C: 3},
+)
+check(hand_shape(hand_5s).length(Suit.S) == 5, "5s hand has 5 spades")
+obs = make_obs(hand_5s, calls=calls_1h_2c, dealer=0, player=2)
+bid = resp.bid(obs)
+check(bid == make_bid(2, Suit.S),
+      f"1H - (2C), 10 HCP + 5S -> 2S natural, not X (got {bid})")
+
+# Negative double over 1C - (1D) showing 4+ hearts, 6+ HCP
+# Kxxx H (3) + Qxxx S (2) + xx D (0) + Jxx C (1) = 6 HCP, 4 hearts
+hand_neg_x_h = _pad_hand(
+    [Card(Rank.KING, Suit.H), Card(Rank.QUEEN, Suit.S),
+     Card(Rank.JACK, Suit.C)],
+    {Suit.S: 4, Suit.H: 4, Suit.D: 2, Suit.C: 3},
+)
+check(hcp(hand_neg_x_h) >= 6, f"neg_x_h HCP = {hcp(hand_neg_x_h)} (>=6)")
+
+calls_1c_1d = [make_bid(1, Suit.C), make_bid(1, Suit.D)]
+obs = make_obs(hand_neg_x_h, calls=calls_1c_1d, dealer=0, player=2)
+bid = resp.bid(obs)
+check(bid == DOUBLE,
+      f"1C - (1D), 6+ HCP + 4H -> X negative (got {bid})")
+
+# Weak hand: 3 HCP → no neg X, PASS
+hand_weak_neg = _pad_hand(
+    [Card(Rank.JACK, Suit.S)],
+    {Suit.S: 4, Suit.H: 4, Suit.D: 3, Suit.C: 2},
+)
+check(hcp(hand_weak_neg) <= 5, f"weak_neg HCP = {hcp(hand_weak_neg)}")
+obs = make_obs(hand_weak_neg, calls=calls_1h_2c, dealer=0, player=2)
+bid = resp.bid(obs)
+check(bid == PASS,
+      f"1H - (2C), 1 HCP + 4S -> PASS (too weak) (got {bid})")
+
+# Opener's response to partner's negative double.
+# Me = N (seat 0). Opened 1C. RHO (E) 1D. Partner (S) X. LHO (W) P. My turn.
+# I have 3-card heart support + min hand → 2H.
+# AKxxx C + Qxx H + Axx S + xx D. Wait I opened 1C so I need 3+ clubs.
+# Let me redo: AKx S + Qxx H + xx D + AKxxx C = A+K+Q+A+K = 17 HCP.
+# Simpler for test: 13 HCP 1C opening with 3 hearts.
+# Axx S + Qxx H + Kx D + AQxxx C = 4+2+3+6 = 15 HCP, 3S/3H/2D/5C.
+# Need exactly 3 hearts with rebid values. Let me try:
+# Kxx S + Qxx H + Axx D + AJxx C = 3+2+4+5 = 14 HCP. Balanced-ish 3-3-3-4.
+hand_opener_neg_resp = _pad_hand(
+    [Card(Rank.KING, Suit.S), Card(Rank.QUEEN, Suit.H),
+     Card(Rank.ACE, Suit.D), Card(Rank.ACE, Suit.C),
+     Card(Rank.JACK, Suit.C)],
+    {Suit.S: 3, Suit.H: 3, Suit.D: 3, Suit.C: 4},
+)
+check(hand_shape(hand_opener_neg_resp).length(Suit.H) == 3,
+      "opener_neg_resp has 3 hearts")
+
+# Auction: N(me)=1C, E=1D, S(partner)=X (negative), W=P, now me.
+calls_neg_response = [
+    make_bid(1, Suit.C), make_bid(1, Suit.D), DOUBLE, PASS,
+]
+obs = make_obs(hand_opener_neg_resp, calls=calls_neg_response,
+               dealer=0, player=0)
+bid = opener.bid(obs)
+# Partner promised 4+ hearts. I have 3. Bid hearts at some level.
+check(bid.strain == Suit.H and bid.level >= 2 and bid.level <= 3
+      and not bid.special,
+      f"1C-(1D)-X-(P), 14 HCP + 3H -> raise hearts (got {bid})")
+
+# Support double: I opened 1C, partner responded 1H, opp overcalled 1S.
+# With exactly 3 hearts, I should double.
+# Axx S + Qxx H + Kxxx D + AKx C = 4+2+3+7 = 16 HCP, 3-3-4-3.
+hand_support_x = _pad_hand(
+    [Card(Rank.ACE, Suit.S), Card(Rank.QUEEN, Suit.H),
+     Card(Rank.KING, Suit.D), Card(Rank.ACE, Suit.C),
+     Card(Rank.KING, Suit.C)],
+    {Suit.S: 3, Suit.H: 3, Suit.D: 4, Suit.C: 3},
+)
+check(hand_shape(hand_support_x).length(Suit.H) == 3,
+      "support_x has exactly 3 hearts")
+
+# N(me) dealer. Auction: N=1C, E=P, S(partner)=1H, W=1S, now me.
+calls_sup_x = [
+    make_bid(1, Suit.C), PASS, make_bid(1, Suit.H), make_bid(1, Suit.S),
+]
+obs = make_obs(hand_support_x, calls=calls_sup_x, dealer=0, player=0)
+bid = opener.bid(obs)
+check(bid == DOUBLE,
+      f"1C-(P)-1H-(1S), 16 HCP + exactly 3H -> X support (got {bid})")
+
+# Same scenario but 4 hearts — should raise 2H, NOT support X.
+# Axx S + Qxxx H + Kxx D + AKx C = 4+2+3+7 = 16, 3-4-3-3
+hand_4h_raise = _pad_hand(
+    [Card(Rank.ACE, Suit.S), Card(Rank.QUEEN, Suit.H),
+     Card(Rank.KING, Suit.D), Card(Rank.ACE, Suit.C),
+     Card(Rank.KING, Suit.C)],
+    {Suit.S: 3, Suit.H: 4, Suit.D: 3, Suit.C: 3},
+)
+check(hand_shape(hand_4h_raise).length(Suit.H) == 4,
+      "4h_raise has 4 hearts")
+obs = make_obs(hand_4h_raise, calls=calls_sup_x, dealer=0, player=0)
+bid = opener.bid(obs)
+check(bid != DOUBLE,
+      f"1C-(P)-1H-(1S), 16 HCP + 4H -> NOT X (got {bid})")
+
+# Responder answering partner's support double.
+# Partner N=1C, E=P, me(S)=1H, W=1S, N=X (support), E=P, me to bid.
+# I have 5 hearts + 10 HCP → raise to 3H (fit known = 8+).
+# x S + AJxxx H + Kxx D + Qxxx C = 1+5+3+2 = 11 HCP, 1-5-3-4
+hand_resp_sup_x = _pad_hand(
+    [Card(Rank.ACE, Suit.H), Card(Rank.JACK, Suit.H),
+     Card(Rank.KING, Suit.D), Card(Rank.QUEEN, Suit.C)],
+    {Suit.S: 1, Suit.H: 5, Suit.D: 4, Suit.C: 3},
+)
+check(hand_shape(hand_resp_sup_x).length(Suit.H) == 5,
+      "resp_sup_x has 5 hearts")
+
+calls_resp_sup_x = [
+    make_bid(1, Suit.C), PASS, make_bid(1, Suit.H), make_bid(1, Suit.S),
+    DOUBLE, PASS,
+]
+obs = make_obs(hand_resp_sup_x, calls=calls_resp_sup_x,
+               dealer=0, player=2)
+bid = resp.bid(obs)
+check(bid.strain == Suit.H and bid.level >= 3 and not bid.special,
+      f"1C-(P)-1H-(1S)-X-(P), 5H + ~11 HCP -> raise hearts (got {bid})")
+
+
 # ── SUMMARY ──────────────────────────────────────────────────────
 section("SUMMARY")
 total = PASS_COUNT + FAIL_COUNT
